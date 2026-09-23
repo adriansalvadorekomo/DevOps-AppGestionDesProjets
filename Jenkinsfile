@@ -26,13 +26,12 @@ pipeline {
     agent any
 
     // JUNIOR: Which tools should Jenkins prepare for us?
-    // Maven comes from Jenkins Tools (auto-install 3.9.16, name must match
-    // `Manage Jenkins > Tools > Maven installations` exactly).
-    // JDK + Node are NOT in `tools` (no JDK installs configured, no NodeJS
-    // plugin on this server) — they come from `environment` + system PATH.
-    tools {
-        maven 'Maven 3.9.16'
-    }
+    // NOTE: we use NO `tools` block on purpose.
+    // - Your Jenkins has zero Maven/JDK installs configured and no NodeJS
+    //   plugin, so any `tools { maven... }` fails compilation.
+    // - Instead: Maven comes from the repo's Maven Wrapper (backend/mvnw,
+    //   pinned to 3.9.16), Java 21 from `environment` below, Node from system.
+    // Nothing to configure in `Manage Jenkins > Tools`.
 
     // JUNIOR: How does Jenkins "listen whenever someone pushes"?
     // 1. githubPush() = Jenkins listens for GitHub webhook events.
@@ -80,21 +79,28 @@ pipeline {
                     url: "${GIT_REPO_URL}"
 
                 // STEP 2: Print versions so juniors can debug "works on my
-                // machine but not Jenkins" issues. Compare with local:
-                // java 21.0.2, mvn 3.9.16, node v26.2.0.
+                // machine but not Jenkins" issues.
+                // NOTE: no system `mvn` on this Jenkins — backend builds via
+                // Maven Wrapper (backend/mvnw), so we version-check the wrapper.
                 sh '''
                     echo "=== Jenkins agent versions ==="
                     java -version
-                    mvn -version
                     node -v
                     npm -v
                 '''
 
-                // STEP 3: Build backend (Spring Boot + Maven).
+                // STEP 3: Build backend (Spring Boot + Maven Wrapper).
                 // `dir('backend')` is required because pom.xml lives in
                 // backend/, not repo root. Old file ran `mvn` at root -> fail.
+                // `./mvnw` downloads Maven 3.9.16 on first run — no Jenkins
+                // Tools setup needed. `chmod +x` because git tracks mvnw
+                // without the executable bit.
                 dir('backend') {
-                    sh 'mvn clean package -DskipTests'
+                    sh '''
+                        chmod +x mvnw
+                        ./mvnw -version
+                        ./mvnw clean package -DskipTests
+                    '''
                 }
 
                 // STEP 4: Build frontend (Angular + npm).
