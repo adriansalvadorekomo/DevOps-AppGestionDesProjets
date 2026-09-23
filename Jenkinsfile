@@ -150,8 +150,21 @@ pipeline {
                         # `|| true` = do not fail if tag already exists on rebuild.
                         git tag -a "build-${BUILD_NUMBER}" -m "Jenkins build ${BUILD_NUMBER}" || true
 
-                        # Rewrite origin URL with token so `git push` is authenticated.
-                        git remote set-url origin "https://${GIT_USER}:${GIT_TOKEN}@github.com/adriansalvadorekomo/DevOps-AppGestionDesProjets.git"
+                        # Authenticate with the PAT as password.
+                        # GitHub requires the literal user `x-access-token` for
+                        # token auth (account passwords were removed in 2021,
+                        # so `user:PAT` fails with "Password authentication
+                        # is not supported" if the stored secret is not a PAT).
+                        git remote set-url origin "https://x-access-token:${GIT_TOKEN}@github.com/adriansalvadorekomo/DevOps-AppGestionDesProjets.git"
+
+                        # Quick auth check with a clear junior-friendly error.
+                        if ! git ls-remote origin >/dev/null 2>&1; then
+                          echo "ERROR: GitHub rejected the token in credentials '146958092'."
+                          echo "Fix: GitHub > Settings > Developer settings > Personal access tokens >"
+                          echo "generate a CLASSIC token with 'repo' scope, then Jenkins >"
+                          echo "Manage Jenkins > Credentials > 146958092 > Update (paste token as password)."
+                          exit 1
+                        fi
 
                         # Push ONLY tags, not branches (avoids retrigger loop).
                         git push origin --tags
