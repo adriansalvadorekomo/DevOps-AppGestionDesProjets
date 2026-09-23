@@ -26,18 +26,12 @@ pipeline {
     agent any
 
     // JUNIOR: Which tools should Jenkins prepare for us?
-    // IMPORTANT: These NAMES must exactly match:
-    //   Jenkins > Manage Jenkins > Tools > Maven / JDK / NodeJS
-    // If a name is wrong, the build fails with "tool not found".
-    tools {
-        maven 'Maven 3.9.16'    // matches your local Maven 3.9.16
-        jdk 'openjdk 21.0.2'    // matches dev JDK 21.0.2; controller runs 21.0.12.1 (compatible).
-                                // Backend pom.xml needs Java 17+, so JDK 21 is fine.
-        nodejs 'NodeJS-26.2.0'  // must match your Jenkins NodeJS install name.
-                                // Create it in Jenkins Tools if missing, version 26.2.0
-                                // to mirror dev. Angular 22 officially supports
-                                // Node 20+, so Node 20/22 LTS also works and is safer.
-    }
+    // NOTE (fix 2026-09-23): your Jenkins has NO Maven/JDK installs configured
+    // and NO NodeJS plugin (valid types: ant, git, gradle, jdk, jgit, maven).
+    // So we use NO `tools` block and rely on system PATH instead:
+    // controller already has Maven 3.9.16, Java 21, Node v26.x.
+    // The Build stage logs `java/mvn/node/npm -v` as proof.
+    // If you later add Tools in Jenkins UI, you can re-add a tools block.
 
     // JUNIOR: How does Jenkins "listen whenever someone pushes"?
     // 1. githubPush() = Jenkins listens for GitHub webhook events.
