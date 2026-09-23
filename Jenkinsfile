@@ -26,12 +26,13 @@ pipeline {
     agent any
 
     // JUNIOR: Which tools should Jenkins prepare for us?
-    // NOTE (fix 2026-09-23): your Jenkins has NO Maven/JDK installs configured
-    // and NO NodeJS plugin (valid types: ant, git, gradle, jdk, jgit, maven).
-    // So we use NO `tools` block and rely on system PATH instead:
-    // controller already has Maven 3.9.16, Java 21, Node v26.x.
-    // The Build stage logs `java/mvn/node/npm -v` as proof.
-    // If you later add Tools in Jenkins UI, you can re-add a tools block.
+    // Maven comes from Jenkins Tools (auto-install 3.9.16, name must match
+    // `Manage Jenkins > Tools > Maven installations` exactly).
+    // JDK + Node are NOT in `tools` (no JDK installs configured, no NodeJS
+    // plugin on this server) — they come from `environment` + system PATH.
+    tools {
+        maven 'Maven 3.9.16'
+    }
 
     // JUNIOR: How does Jenkins "listen whenever someone pushes"?
     // 1. githubPush() = Jenkins listens for GitHub webhook events.
@@ -48,6 +49,11 @@ pipeline {
 
     // JUNIOR: Global variables for the whole pipeline.
     environment {
+        // Pin Java 21 (agent default is Java 26 = too new for Spring Boot).
+        // This path exists on the server: /usr/lib/jvm/java-21-openjdk (21.0.12.1,
+        // same as Jenkins controller). Putting it first in PATH wins over 26.
+        JAVA_HOME = '/usr/lib/jvm/java-21-openjdk'
+        PATH = "${JAVA_HOME}/bin:${PATH}"
         // Your GitHub repo (found via `git remote -v`).
         GIT_REPO_URL = 'https://github.com/adriansalvadorekomo/DevOps-AppGestionDesProjets.git'
         GIT_BRANCH = 'main'
