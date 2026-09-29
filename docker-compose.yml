@@ -1,0 +1,61 @@
+# Full stack: Frontend (nginx) -> Backend (Spring Boot) -> Database (MySQL 8.0)
+# Reproducible via: docker compose up -d --build  (Jenkins-ready, no secrets baked in)
+# Override defaults with a local .env file (untracked) or environment variables.
+
+services:
+  db:
+    image: mysql:8.0
+    container_name: app-db
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-test_db}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - app-net
+    # No published ports: DB is reachable internally as db:3306 only.
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -p$$MYSQL_ROOT_PASSWORD"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    container_name: app-backend
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:mysql://db:3306/${MYSQL_DATABASE:-test_db}?createDatabaseIfNotExist=true&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+      SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME:-root}
+      SPRING_DATASOURCE_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+      SPRING_JPA_HIBERNATE_DDL_AUTO: ${SPRING_JPA_HIBERNATE_DDL_AUTO:-update}
+    ports:
+      - "8080:8080"
+    networks:
+      - app-net
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    container_name: app-frontend
+    depends_on:
+      backend:
+        condition: service_started
+    ports:
+      # Host 4200 preserves README convention (localhost:4200); container serves on 80.
+      # Browser calls backend via http://localhost:8080 (published above).
+      - "4200:80"
+    networks:
+      - app-net
+    restart: unless-stopped
+
+networks:
+  app-net:
+    driver: bridge
+
+volumes:
+  mysql_data:
