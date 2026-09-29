@@ -218,12 +218,14 @@ pipeline {
         // ====================================================================
         stage('Login Docker Hub') {
             steps {
-                // Always-on marker: if the stage fails with NO logs at all,
-                // the failure is in `withCredentials` itself (credential ID
-                // not found / wrong store / wrong kind) — Jenkins reports that
-                // in the full Console Output, not in this stage's step log.
-                // NOTE: literal ID (no ${VAR} interpolation) on purpose.
                 echo '=== Stage: Login Docker Hub (credential ID: dockerhub-credentials) ==='
+                // try/catch: if `withCredentials` itself throws (entry missing
+                // / invisible / wrong kind), the stage would otherwise die with
+                // the error buried in Console Output. Catch it and print the
+                // exact remediation. `sh` failures (exit code) already explain
+                // themselves, so those are rethrown untouched.
+                script {
+                    try {
                 // `withCredentials` safely injects Docker Hub user + token as
                 // env vars. Jenkins masks them in logs. Never hardcode tokens!
                 withCredentials([usernamePassword(
@@ -243,6 +245,18 @@ pipeline {
                           exit 1
                         fi
                     '''
+                }
+                    } catch (err) {
+                        def msg = err.getMessage() ?: ''
+                        if (msg.contains('exit code')) { throw err }
+                        echo "ERROR: Jenkins could not load credential 'dockerhub-credentials'."
+                        echo "Jenkins said: ${msg}"
+                        echo "Remediation (pick the one that matches):"
+                        echo "  A. NOT FOUND: create it at Dashboard > Manage Jenkins > Credentials > 'Stores scoped to Jenkins' > global > Add Credentials (Kind 'Username with password', ID exactly 'dockerhub-credentials')."
+                        echo "     WRONG PLACES that builds cannot see: your personal page (top-right username > Credentials), or inside a Folder's Credentials when the job is at root."
+                        echo "  B. WRONG KIND: the Kind column must read 'Username with password'. A 'Secret text' entry with the same ID is rejected by this stage — recreate it with the right kind."
+                        throw err
+                    }
                 }
             }
         }
