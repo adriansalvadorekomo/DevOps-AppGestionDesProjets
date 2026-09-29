@@ -19,21 +19,21 @@
 //
 // It also "listens" for GitHub pushes via triggers (webhook + polling).
 //
-// ONE-TIME SETUP (Jenkins UI):
-//   - Credential `146958092` = GitHub user + PAT (classic, `repo` scope).
-//   - Credential `dockerhub-credentials` = Docker Hub user `twelvy1400` +
-//     PAT (Read + Write scope). NEVER paste tokens into code or chat — if a
-//     token was ever exposed, revoke it on Docker Hub first, then store only
-//     the fresh value here.
-//     Create: Manage Jenkins > Credentials > Add "Username with password".
-//   - Credential `mysql-root-password` = DB root password (Secret text).
-//     Must match the password the mysql_data volume was initialized with
-//     (local `.env` uses the same value; `.env` itself is gitignored and
-//     never reaches the agent — this credential fills the gap).
+// ONE-TIME SETUP:
+//   - Jenkins credential `146958092` = GitHub user + PAT (classic, `repo` scope).
+//     (Proven working — stages 1 and 8 use it.)
+//   - Docker Hub auth (NO Jenkins credential needed): run ONCE on the host:
+//       sudo -H -u jenkins bash -c 'docker login -u twelvy1400'
+//     Paste a Hub PAT (Read+Write) at the hidden prompt. Stored in the agent
+//     user's ~/.docker/config.json only. NEVER paste tokens into code or chat —
+//     if one was ever exposed, revoke it on Docker Hub first.
+//   - Jenkins credential `mysql-root-password` (Secret text, OPTIONAL) = DB root
+//     password. If present, Deploy injects it (masked); if missing, the pipeline
+//     falls back to compose defaults with a WARNING instead of failing.
 //   - The agent must have Docker engine + Compose v2, agent user in `docker`.
 //   - Docker files must be on GitHub `main` (they are committed in this repo).
-// SECRETS POLICY: no literal secret appears in this file — only credential
-// IDs. All secrets travel via `withCredentials` (Jenkins masks them in logs).
+// SECRETS POLICY: no literal secret appears in this repo — Hub auth lives with
+// the agent OS user, DB password travels via `withCredentials` when available.
 //
 // Versions pinned here match your machines (checked 2026-09-22):
 //   - Maven 3.9.16        (repo's backend/mvnw; Docker build uses maven:3.9)
@@ -95,22 +95,8 @@ pipeline {
         GITHUB_CREDENTIALS_ID = '146958092'
         // JUNIOR: Docker Hub destination (namespace must exist on Docker Hub).
         // Images: twelvy1400/backend + twelvy1400/frontend.
+        // Auth is agent-level (see ONE-TIME SETUP) — no Hub credential ID here.
         DOCKERHUB_NAMESPACE = 'twelvy1400'
-        // JUNIOR: Jenkins Credentials ID for Docker Hub.
-        // Create it once: Jenkins > Manage Jenkins > Credentials >
-        // Add "Username with password" (username = twelvy1400,
-        // password = Docker Hub PAT with Read+Write scope),
-        // ID = exactly `dockerhub-credentials`.
-        DOCKERHUB_CREDENTIALS_ID = 'dockerhub-credentials'
-        // JUNIOR: Jenkins Credentials ID for the MySQL root password.
-        // Create it once: Jenkins > Manage Jenkins > Credentials >
-        // Add "Secret text" (secret = DB root password, same value as local
-        // `.env`), ID = exactly `mysql-root-password`.
-        // Why: `.env` is gitignored, so a fresh agent checkout has no DB
-        // password — Compose would silently fall back to its default. This
-        // credential injects the real one as an env var (shell env beats
-        // compose defaults), keeping the secret out of the repo AND the logs.
-        MYSQL_ROOT_PASSWORD_CREDENTIALS_ID = 'mysql-root-password'
         // Immutable tag per build, e.g. build-42. `:latest` is added in stage 5.
         IMAGE_TAG = "build-${BUILD_NUMBER}"
     }
@@ -227,53 +213,35 @@ pipeline {
         }
 
         // ====================================================================
-        // STAGE 4/8: LOGIN DOCKER HUB
-        // Goal: authenticate to Docker Hub WITHOUT leaking the secret.
-        // `--password-stdin` keeps the PAT out of `ps` output; Jenkins masks
-        // DH_PASS in logs. Never `docker login -p <secret>` and never echo it.
+        // STAGE 4/8: LOGIN DOCKER HUB (agent-level auth check)
+        // Goal: confirm the agent OS user is logged in to Docker Hub.
+        // WHY NOT withCredentials? The `dockerhub-credentials` entry is not
+        // resolvable on this Jenkins ("Could not find credentials entry"),
+        // which blocked every build. Instead, auth lives with the agent user
+        // (~/.docker/config.json), created ONCE on the host — no secret ever
+        // touches the repo, the pipeline, or the build logs:
+        //   sudo -H -u jenkins bash -c 'docker login -u twelvy1400'
+        // (paste the Hub PAT at the hidden prompt). This stage only VERIFIES
+        // that auth exists and fails with the exact remediation if not.
+        // NOTE: `post.always` intentionally does NOT `docker logout`, or it
+        // would wipe this agent-level auth after every build.
         // ====================================================================
         stage('Login Docker Hub') {
             steps {
-                echo '=== Stage: Login Docker Hub (credential ID: dockerhub-credentials) ==='
-                // try/catch: if `withCredentials` itself throws (entry missing
-                // / invisible / wrong kind), the stage would otherwise die with
-                // the error buried in Console Output. Catch it and print the
-                // exact remediation. `sh` failures (exit code) already explain
-                // themselves, so those are rethrown untouched.
-                script {
-                    try {
-                // `withCredentials` safely injects Docker Hub user + token as
-                // env vars. Jenkins masks them in logs. Never hardcode tokens!
-                withCredentials([usernamePassword(
-                    credentialsId: 'dockerhub-credentials',
-                    usernameVariable: 'DH_USER',
-                    passwordVariable: 'DH_PASS'
-                )]) {
-                    sh '''
-                        if echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin; then
-                          echo "=== Docker Hub login OK ==="
-                        else
-                          echo "ERROR: 'docker login' failed (exit $?)."
-                          echo "Checklist:"
-                          echo "  1. Jenkins credential 'dockerhub-credentials' must be kind 'Username with password', username 'twelvy1400'."
-                          echo "  2. Its password must be a VALID Docker Hub PAT (Read+Write). A revoked/expired/Read-only token fails here."
-                          echo "  3. Regenerate the PAT on Docker Hub > Account Settings > Security, update the credential, rebuild."
-                          exit 1
-                        fi
-                    '''
-                }
-                    } catch (err) {
-                        def msg = err.getMessage() ?: ''
-                        if (msg.contains('exit code')) { throw err }
-                        echo "ERROR: Jenkins could not load credential 'dockerhub-credentials'."
-                        echo "Jenkins said: ${msg}"
-                        echo "Remediation (pick the one that matches):"
-                        echo "  A. NOT FOUND: create it at Dashboard > Manage Jenkins > Credentials > 'Stores scoped to Jenkins' > global > Add Credentials (Kind 'Username with password', ID exactly 'dockerhub-credentials')."
-                        echo "     WRONG PLACES that builds cannot see: your personal page (top-right username > Credentials), or inside a Folder's Credentials when the job is at root."
-                        echo "  B. WRONG KIND: the Kind column must read 'Username with password'. A 'Secret text' entry with the same ID is rejected by this stage — recreate it with the right kind."
-                        throw err
-                    }
-                }
+                echo '=== Stage: Login Docker Hub (agent-level auth check) ==='
+                sh '''
+                    if grep -q '"auth"' "$HOME/.docker/config.json" 2>/dev/null; then
+                      echo "Docker Hub auth present for agent user '$(whoami)'."
+                      docker info 2>/dev/null | grep -i 'username' || true
+                      echo "=== Docker Hub login OK ==="
+                    else
+                      echo "ERROR: agent user '$(whoami)' is NOT logged in to Docker Hub."
+                      echo "One-time fix ON THE JENKINS HOST (secret never touches repo/logs):"
+                      echo "  sudo -H -u jenkins bash -c 'docker login -u twelvy1400'"
+                      echo "Paste the Hub PAT (Read+Write) at the hidden prompt, then rebuild."
+                      exit 1
+                    fi
+                '''
             }
         }
 
@@ -340,75 +308,33 @@ pipeline {
         //   named volume mysql_data, dedicated network app-net, no published
         //   DB port, secrets via ${VAR:-default}.
         // SECRET FLOW: `.env` is gitignored so the agent has none — the DB
-        // password below comes from the `mysql-root-password` credential,
-        // injected as a shell env var. Compose resolves shell env BEFORE
-        // `.env`/defaults, so both the containers AND the mysqladmin
-        // healthcheck get the real password, and Jenkins masks it in logs.
+        // password comes from the `mysql-root-password` credential when it
+        // resolves (injected as shell env; shell env beats compose defaults
+        // and Jenkins masks it). If that credential is missing/unresolvable,
+        // the pipeline still runs `scripts/deploy-verify.sh` WITHOUT it and
+        // compose falls back to its dev default ('root') with a loud WARNING
+        // instead of a cryptic failure. The script itself never echoes secrets.
         // ====================================================================
         stage('Deploy / Verify') {
             steps {
-                // `withCredentials` (string binding) exposes the DB password
-                // ONLY as a masked env var for these steps. Never echo it.
-                // NOTE: literal ID (no ${VAR} interpolation) on purpose.
-                withCredentials([string(
-                    credentialsId: 'mysql-root-password',
-                    variable: 'MYSQL_ROOT_PASSWORD'
-                )]) {
-                sh '''
-                    echo "=== Deploy: (re)create full stack ==="
-                    docker compose up -d --build
-                    docker compose ps
-
-                    echo "=== Verify 1/3: db becomes healthy (max ~120s) ==="
-                    for i in $(seq 1 24); do
-                      STATUS=$(docker inspect app-db --format '{{.State.Health.Status}}')
-                      echo "db health: $STATUS (attempt $i/24)"
-                      if [ "$STATUS" = "healthy" ]; then break; fi
-                      sleep 5
-                    done
-                    STATUS=$(docker inspect app-db --format '{{.State.Health.Status}}')
-                    if [ "$STATUS" != "healthy" ]; then
-                      echo "ERROR: db never became healthy."
-                      docker compose logs --tail=50 db || true
-                      exit 1
-                    fi
-
-                    echo "=== Verify 2/3: backend answers on :8080 (max ~120s) ==="
-                    for i in $(seq 1 24); do
-                      CODE=$(curl -s -m 5 -o /dev/null -w '%{http_code}' http://localhost:8080/entreprise/all || echo 000)
-                      echo "backend /entreprise/all: HTTP $CODE (attempt $i/24)"
-                      if [ "$CODE" = "200" ]; then break; fi
-                      sleep 5
-                    done
-                    CODE=$(curl -s -m 5 -o /dev/null -w '%{http_code}' http://localhost:8080/entreprise/all || echo 000)
-                    if [ "$CODE" != "200" ]; then
-                      echo "ERROR: backend never answered 200."
-                      docker compose logs --tail=50 backend || true
-                      exit 1
-                    fi
-                    curl -s -m 10 http://localhost:8080/entreprise/all
-                    echo
-
-                    echo "=== Verify 3/3: frontend serves on :4200 (incl. SPA fallback) ==="
-                    CODE=$(curl -s -m 10 -o /dev/null -w '%{http_code}' http://localhost:4200/ || echo 000)
-                    echo "frontend /: HTTP $CODE"
-                    if [ "$CODE" != "200" ]; then
-                      echo "ERROR: frontend did not serve 200."
-                      docker compose logs --tail=50 frontend || true
-                      exit 1
-                    fi
-                    CODE=$(curl -s -m 10 -o /dev/null -w '%{http_code}' http://localhost:4200/entreprise || echo 000)
-                    echo "frontend /entreprise (SPA fallback): HTTP $CODE"
-                    if [ "$CODE" != "200" ]; then
-                      echo "ERROR: SPA fallback route did not serve 200."
-                      docker compose logs --tail=50 frontend || true
-                      exit 1
-                    fi
-
-                    echo "=== Stack status ==="
-                    docker compose ps
-                '''
-                } // withCredentials: MYSQL_ROOT_PASSWORD leaves scope here
+                script {
+                    try {
+                        // NOTE: literal ID (no ${VAR} interpolation) on purpose.
+                        withCredentials([string(
+                            credentialsId: 'mysql-root-password',
+                            variable: 'MYSQL_ROOT_PASSWORD'
+                        )]) {
+                            echo 'DB password: Jenkins credential.'
+                            sh 'bash scripts/deploy-verify.sh'
+                        }
+                    } catch (err) {
+                        def msg = err.getMessage() ?: ''
+                        if (msg.contains('exit code')) { throw err } // deploy script already explained itself
+                        echo "WARNING: credential 'mysql-root-password' unusable (${msg})."
+                        echo "Falling back to compose defaults (dev password 'root'). Create/fix the credential to silence this."
+                        sh 'bash scripts/deploy-verify.sh'
+                    }
+                }
             }
         }
 
@@ -467,8 +393,8 @@ pipeline {
             echo 'Pipeline finished.'
             // Archive the backend jar so you can download it from Jenkins UI.
             archiveArtifacts artifacts: 'backend/target/*.jar', allowEmptyArchive: true, fingerprint: true
-            // Always log out so no registry session lingers on a shared agent.
-            sh 'docker logout || true'
+            // NOTE: no `docker logout` here on purpose — Hub auth lives with
+            // the agent user (see stage 4); logging out would break the next build.
         }
         success {
             echo 'Checkout + Build + Docker Build + Login + Tag + Push + Deploy/Verify + Push succeeded!'
