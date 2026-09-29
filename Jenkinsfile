@@ -222,11 +222,12 @@ pipeline {
                 // the failure is in `withCredentials` itself (credential ID
                 // not found / wrong store / wrong kind) — Jenkins reports that
                 // in the full Console Output, not in this stage's step log.
-                echo "=== Stage: Login Docker Hub (credential ID: ${DOCKERHUB_CREDENTIALS_ID}) ==="
+                // NOTE: literal ID (no ${VAR} interpolation) on purpose.
+                echo '=== Stage: Login Docker Hub (credential ID: dockerhub-credentials) ==='
                 // `withCredentials` safely injects Docker Hub user + token as
                 // env vars. Jenkins masks them in logs. Never hardcode tokens!
                 withCredentials([usernamePassword(
-                    credentialsId: "${DOCKERHUB_CREDENTIALS_ID}",
+                    credentialsId: 'dockerhub-credentials',
                     usernameVariable: 'DH_USER',
                     passwordVariable: 'DH_PASS'
                 )]) {
@@ -307,8 +308,9 @@ pipeline {
             steps {
                 // `withCredentials` (string binding) exposes the DB password
                 // ONLY as a masked env var for these steps. Never echo it.
+                // NOTE: literal ID (no ${VAR} interpolation) on purpose.
                 withCredentials([string(
-                    credentialsId: "${MYSQL_ROOT_PASSWORD_CREDENTIALS_ID}",
+                    credentialsId: 'mysql-root-password',
                     variable: 'MYSQL_ROOT_PASSWORD'
                 )]) {
                 sh '''
