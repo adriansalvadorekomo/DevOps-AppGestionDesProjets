@@ -195,14 +195,30 @@ pipeline {
         //   backend:  maven:3.9-eclipse-temurin-17-alpine -> eclipse-temurin:17-jre-alpine
         //   frontend: node:22-alpine -> nginx:alpine (serves dist/frontend/browser)
         // ====================================================================
+        // NOTE: registry pulls go through the Docker daemon and can hit
+        // transient Hub timeouts (e.g. `dial tcp ...:443: i/o timeout` on
+        // registry-1.docker.io). Every network-touching docker command below
+        // is retried — a momentary blip must not fail the whole pipeline.
+        // ====================================================================
         stage('Docker Build') {
             steps {
                 sh '''
+                    retry() {
+                      tries=$1; shift
+                      n=1
+                      while [ $n -le $tries ]; do
+                        echo "--- attempt $n/$tries: $* ---"
+                        if "$@"; then return 0; fi
+                        n=$((n + 1))
+                        if [ $n -le $tries ]; then echo "transient failure, sleeping 15s..."; sleep 15; fi
+                      done
+                      return 1
+                    }
                     echo "=== Building backend image ==="
-                    docker build ./backend -t "$DOCKERHUB_NAMESPACE/backend:$IMAGE_TAG"
+                    retry 3 docker build ./backend -t "$DOCKERHUB_NAMESPACE/backend:$IMAGE_TAG"
                     docker image inspect "$DOCKERHUB_NAMESPACE/backend:$IMAGE_TAG" > /dev/null
                     echo "=== Building frontend image ==="
-                    docker build ./frontend -t "$DOCKERHUB_NAMESPACE/frontend:$IMAGE_TAG"
+                    retry 3 docker build ./frontend -t "$DOCKERHUB_NAMESPACE/frontend:$IMAGE_TAG"
                     docker image inspect "$DOCKERHUB_NAMESPACE/frontend:$IMAGE_TAG" > /dev/null
                     echo "=== Built images ==="
                     docker images | grep "$DOCKERHUB_NAMESPACE" || true
@@ -290,15 +306,26 @@ pipeline {
         stage('Push Images') {
             steps {
                 sh '''
+                    retry() {
+                      tries=$1; shift
+                      n=1
+                      while [ $n -le $tries ]; do
+                        echo "--- attempt $n/$tries: $* ---"
+                        if "$@"; then return 0; fi
+                        n=$((n + 1))
+                        if [ $n -le $tries ]; then echo "transient failure, sleeping 15s..."; sleep 15; fi
+                      done
+                      return 1
+                    }
                     echo "=== Pushing backend ==="
-                    docker push "$DOCKERHUB_NAMESPACE/backend:$IMAGE_TAG"
-                    docker push "$DOCKERHUB_NAMESPACE/backend:latest"
+                    retry 3 docker push "$DOCKERHUB_NAMESPACE/backend:$IMAGE_TAG"
+                    retry 3 docker push "$DOCKERHUB_NAMESPACE/backend:latest"
                     echo "=== Pushing frontend ==="
-                    docker push "$DOCKERHUB_NAMESPACE/frontend:$IMAGE_TAG"
-                    docker push "$DOCKERHUB_NAMESPACE/frontend:latest"
+                    retry 3 docker push "$DOCKERHUB_NAMESPACE/frontend:$IMAGE_TAG"
+                    retry 3 docker push "$DOCKERHUB_NAMESPACE/frontend:latest"
                     echo "=== Registry proof: pull immutable tags back ==="
-                    docker pull "$DOCKERHUB_NAMESPACE/backend:$IMAGE_TAG"
-                    docker pull "$DOCKERHUB_NAMESPACE/frontend:$IMAGE_TAG"
+                    retry 3 docker pull "$DOCKERHUB_NAMESPACE/backend:$IMAGE_TAG"
+                    retry 3 docker pull "$DOCKERHUB_NAMESPACE/frontend:$IMAGE_TAG"
                 '''
             }
         }
