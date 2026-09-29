@@ -230,13 +230,25 @@ pipeline {
             steps {
                 echo '=== Stage: Login Docker Hub (agent-level auth check) ==='
                 sh '''
-                    if grep -q '"auth"' "$HOME/.docker/config.json" 2>/dev/null; then
-                      echo "Docker Hub auth present for agent user '$(whoami)'."
+                    CFG="$HOME/.docker/config.json"
+                    echo "agent user: '$(whoami)', HOME: '$HOME'"
+                    if [ ! -f "$CFG" ]; then
+                      echo "ERROR: no Docker client config at $CFG."
+                      echo "The agent user '$(whoami)' never logged in (or it was wiped)."
+                      echo "One-time fix ON THE JENKINS HOST (secret never touches repo/logs):"
+                      echo "  sudo -H -u jenkins bash -c 'docker login -u twelvy1400'"
+                      echo "Paste the Hub PAT (Read+Write) at the hidden prompt, then rebuild."
+                      exit 1
+                    fi
+                    echo "config dir listing (names only, no secrets):"
+                    ls -l "$HOME/.docker/" || true
+                    if grep -q '"auth"' "$CFG" 2>/dev/null; then
+                      echo "Docker Hub auth entry present."
                       docker info 2>/dev/null | grep -i 'username' || true
                       echo "=== Docker Hub login OK ==="
                     else
-                      echo "ERROR: agent user '$(whoami)' is NOT logged in to Docker Hub."
-                      echo "One-time fix ON THE JENKINS HOST (secret never touches repo/logs):"
+                      echo "ERROR: $CFG exists but holds NO stored credential (empty file or wiped by 'docker logout')."
+                      echo "Re-login ON THE JENKINS HOST:"
                       echo "  sudo -H -u jenkins bash -c 'docker login -u twelvy1400'"
                       echo "Paste the Hub PAT (Read+Write) at the hidden prompt, then rebuild."
                       exit 1
