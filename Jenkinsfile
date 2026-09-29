@@ -218,6 +218,11 @@ pipeline {
         // ====================================================================
         stage('Login Docker Hub') {
             steps {
+                // Always-on marker: if the stage fails with NO logs at all,
+                // the failure is in `withCredentials` itself (credential ID
+                // not found / wrong store / wrong kind) — Jenkins reports that
+                // in the full Console Output, not in this stage's step log.
+                echo "=== Stage: Login Docker Hub (credential ID: ${DOCKERHUB_CREDENTIALS_ID}) ==="
                 // `withCredentials` safely injects Docker Hub user + token as
                 // env vars. Jenkins masks them in logs. Never hardcode tokens!
                 withCredentials([usernamePassword(
@@ -226,8 +231,16 @@ pipeline {
                     passwordVariable: 'DH_PASS'
                 )]) {
                     sh '''
-                        echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
-                        echo "=== Docker Hub login OK ==="
+                        if echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin; then
+                          echo "=== Docker Hub login OK ==="
+                        else
+                          echo "ERROR: 'docker login' failed (exit $?)."
+                          echo "Checklist:"
+                          echo "  1. Jenkins credential 'dockerhub-credentials' must be kind 'Username with password', username 'twelvy1400'."
+                          echo "  2. Its password must be a VALID Docker Hub PAT (Read+Write). A revoked/expired/Read-only token fails here."
+                          echo "  3. Regenerate the PAT on Docker Hub > Account Settings > Security, update the credential, rebuild."
+                          exit 1
+                        fi
                     '''
                 }
             }
