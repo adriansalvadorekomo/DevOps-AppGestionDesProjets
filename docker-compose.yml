@@ -1,6 +1,9 @@
 # Full stack: Frontend (nginx) -> Backend (Spring Boot) -> Database (MySQL 8.0)
+# + Code quality: SonarQube (lts-community) -> SonarDB (Postgres 15)
 # Reproducible via: docker compose up -d --build  (Jenkins-ready, no secrets baked in)
 # Override defaults with a local .env file (untracked) or environment variables.
+# SonarQube needs Postgres: SonarQube 9.9+ dropped MySQL, so app-db (mysql:8.0)
+# CANNOT be reused here. Host prereq: sysctl -w vm.max_map_count=262144 (~2GB RAM).
 
 services:
   db:
@@ -53,9 +56,71 @@ services:
       - app-net
     restart: unless-stopped
 
+  # JUNIOR: Why Postgres and not the existing MySQL db?
+  # SonarQube 9.9+ supports ONLY Postgres ( + embedded H2 for demos).
+  # MySQL/Oracle support was removed upstream, so sonardb is a DEDICATED
+  # database for code-quality data only (issues, coverage, history).
+  # Never point the app backend at sonardb, never point SonarQube at app-db.
+  sonardb:
+    image: postgres:15-alpine
+    container_name: app-sonardb
+    environment:
+      POSTGRES_USER: ${SONAR_JDBC_USERNAME:-sonar}
+      POSTGRES_PASSWORD: ${SONAR_JDBC_PASSWORD:-sonar}
+      POSTGRES_DB: ${SONAR_JDBC_DATABASE:-sonar}
+    volumes:
+      - sonardb_data:/var/lib/postgresql/data
+    networks:
+      - app-net
+    # No published ports: reachable internally as sonardb:5432 only.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  # JUNIOR: What is this?
+  # SonarQube = static-analysis server: scanners send sources + coverage,
+  # server computes bugs/vulnerabilities/duplication/coverage, Quality Gate
+  # says PASS/FAIL. UI at http://localhost:9000 (admin/admin on first boot).
+  # Scanner -> http://sonarqube:9000 inside Compose; browser -> localhost:9000.
+  sonarqube:
+    image: sonarqube:lts-community
+    container_name: app-sonarqube
+    depends_on:
+      sonardb:
+        condition: service_healthy
+    environment:
+      SONAR_JDBC_URL: jdbc:postgresql://sonardb:5432/${SONAR_JDBC_DATABASE:-sonar}
+      SONAR_JDBC_USERNAME: ${SONAR_JDBC_USERNAME:-sonar}
+      SONAR_JDBC_PASSWORD: ${SONAR_JDBC_PASSWORD:-sonar}
+      # Token is NEVER baked here: scanners pass SONAR_TOKEN at analysis time
+      # (Jenkins credential `sonar-token`, see Jenkinsfile + SONARQ.md).
+    ports:
+      - "9000:9000"
+    volumes:
+      - sonarqube_data:/opt/sonarqube/data
+      - sonarqube_logs:/opt/sonarqube/logs
+      - sonarqube_extensions:/opt/sonarqube/extensions
+    networks:
+      - app-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/api/system/status | grep -q UP || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    restart: unless-stopped
+
 networks:
   app-net:
     driver: bridge
 
 volumes:
   mysql_data:
+  sonardb_data:
+  sonarqube_data:
+  sonarqube_logs:
+  sonarqube_extensions:

@@ -219,8 +219,9 @@ pipeline {
 | HTTP Client | Angular HttpClient |
 | Build backend | Apache Maven |
 | Build frontend | npm / Angular CLI |
-| CI/CD | Jenkins |
-| Conteneurisation | Docker *(à venir)* |
+| CI/CD | Jenkins (10 stages: Checkout → Build → SonarQube Analysis → Quality Gate → Docker Build → …) |
+| Conteneurisation | Docker + Compose (backend, frontend, mysql:8.0, sonarqube:lts-community, postgres:15-alpine) |
+| Qualité code | SonarQube LTS (:9000, voir `SONARQ.md` + `sonar-project.properties`) |
 
 ---
 

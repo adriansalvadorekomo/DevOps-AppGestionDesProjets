@@ -4,18 +4,21 @@
 // This is a Declarative Jenkins Pipeline (Jenkinsfile).
 // Jenkins reads it and runs your CI/CD work step by step.
 //
-// Flow: GitHub -> Jenkins -> Docker Hub, then redeploy + verify on the host.
+// Flow: GitHub -> Jenkins -> SonarQube -> Docker Hub, then redeploy + verify.
 //
-// Our pipeline has 8 stages:
+// Our pipeline has 10 stages:
 //   1. Checkout      -> download code from GitHub (credentials, branch main)
 //   2. Build         -> compile backend (Maven Wrapper) + frontend (npm)
-//   3. Docker Build  -> build backend + frontend images, tag :build-N
-//   4. Login Docker Hub -> docker login with Jenkins credentials (masked)
-//   5. Tag Images    -> also tag both images :latest
-//   6. Push Images   -> push :build-N + :latest, then pull back as proof
-//   7. Deploy/Verify -> docker compose up -d --build, wait for db healthy,
-//                       curl backend :8080 + frontend :4200
-//   8. Push          -> push a build tag back to GitHub (tags only, no loop)
+//   3. SonarQube Analysis -> backend mvn sonar:sonar + frontend scanner-cli
+//                       -> sends to http://sonarqube:9000 (see SONARQ.md)
+//   4. Quality Gate  -> FAIL pipeline if SonarQube gate is RED (bugs/vulns)
+//   5. Docker Build  -> build backend + frontend images, tag :build-N
+//   6. Login Docker Hub -> docker login with Jenkins credentials (masked)
+//   7. Tag Images    -> also tag both images :latest
+//   8. Push Images   -> push :build-N + :latest, then pull back as proof
+//   9. Deploy/Verify -> docker compose up -d --build, wait for db healthy,
+//                       curl backend :8080 + frontend :4200 (+ sonarqube :9000)
+//  10. Push          -> push a build tag back to GitHub (tags only, no loop)
 //
 // It also "listens" for GitHub pushes via triggers (webhook + polling).
 //
@@ -30,10 +33,16 @@
 //   - Jenkins credential `mysql-root-password` (Secret text, OPTIONAL) = DB root
 //     password. If present, Deploy injects it (masked); if missing, the pipeline
 //     falls back to compose defaults with a WARNING instead of failing.
+//   - Jenkins credential `sonar-token` (Secret text, REQUIRED for stages 3-4) =
+//     SonarQube user token. Create once: SonarQube http://localhost:9000
+//     (admin/admin first boot) > My Account > Security > Generate Token >
+//     Jenkins > Credentials > Secret text, ID = exactly `sonar-token`.
+//     Full guide: SONARQ.md §7. Scanner uses it via -Dsonar.token / SONAR_TOKEN.
+//     NEVER paste it into code, chat, or sonar-project.properties.
 //   - The agent must have Docker engine + Compose v2, agent user in `docker`.
 //   - Docker files must be on GitHub `main` (they are committed in this repo).
 // SECRETS POLICY: no literal secret appears in this repo — Hub auth lives with
-// the agent OS user, DB password travels via `withCredentials` when available.
+// the agent OS user, DB password + Sonar token travel via `withCredentials`.
 //
 // Versions pinned here match your machines (checked 2026-09-22):
 //   - Maven 3.9.16        (repo's backend/mvnw; Docker build uses maven:3.9)
@@ -44,7 +53,12 @@
 //     and uses `npm ci` so you can see what the Jenkins agent really has.
 //   - Docker images: maven:3.9-eclipse-temurin-17-alpine (build),
 //     eclipse-temurin:17-jre-alpine (backend runtime), node:22-alpine (build),
-//     nginx:alpine (frontend runtime), mysql:8.0 (database).
+//     nginx:alpine (frontend runtime), mysql:8.0 (database),
+//     sonarqube:lts-community + postgres:15-alpine (code quality, see SONARQ.md).
+//   - SonarQube: server http://localhost:9000 (compose service `sonarqube`),
+//     scanner sonarsource/sonar-scanner-cli (frontend) + sonar-maven-plugin
+//     3.9.1.2184 (backend) + JaCoCo 0.8.11 coverage. Project key
+//     `devops-appgestiondesprojets` (sonar-project.properties at root).
 // ============================================================================
 
 pipeline {
@@ -72,7 +86,7 @@ pipeline {
     //    And check "GitHub hook trigger for GITScm polling" in the job config.
     // 2. pollSCM() = fallback: Jenkins checks GitHub every 2 min if webhook fails.
     // NOTE: pushing to Docker Hub never retriggers this pipeline (only GitHub
-    // pushes do), and stage 8 pushes Git TAGS only (not `main`) to avoid a loop.
+    // pushes do), and stage 10 pushes Git TAGS only (not `main`) to avoid a loop.
     triggers {
         githubPush()
         pollSCM('H/2 * * * *')
@@ -97,14 +111,23 @@ pipeline {
         // Images: twelvy1400/backend + twelvy1400/frontend.
         // Auth is agent-level (see ONE-TIME SETUP) — no Hub credential ID here.
         DOCKERHUB_NAMESPACE = 'twelvy1400'
-        // Immutable tag per build, e.g. build-42. `:latest` is added in stage 5.
+        // Immutable tag per build, e.g. build-42. `:latest` is added in stage 7.
         IMAGE_TAG = "build-${BUILD_NUMBER}"
+        // JUNIOR: SonarQube settings (see SONARQ.md).
+        // SONAR_HOST_URL = where the server lives. Local compose publishes
+        // :9000; on the Jenkins host use http://localhost:9000 (same host runs
+        // `docker compose up`). Override per-env via Jenkins global env if needed.
+        // Inside a scanner container on app-net, use http://sonarqube:9000.
+        SONAR_HOST_URL = 'http://localhost:9000'
+        SONAR_PROJECT_KEY = 'devops-appgestiondesprojets'
+        // Credential ID holding the SonarQube token (Secret text, see setup above).
+        SONAR_CREDENTIALS_ID = 'sonar-token'
     }
 
     stages {
 
         // ====================================================================
-        // STAGE 1/8: CHECKOUT
+        // STAGE 1/10: CHECKOUT
         // Goal: download the code from GitHub using your GitHub credentials.
         // ====================================================================
         stage('Checkout') {
@@ -118,7 +141,7 @@ pipeline {
         }
 
         // ====================================================================
-        // STAGE 2/8: BUILD
+        // STAGE 2/10: BUILD
         // Goal: sanity-compile everything WITHOUT Docker (fail fast: a broken
         // jar or npm build should stop the pipeline before any image is built).
         // ====================================================================
@@ -175,7 +198,113 @@ pipeline {
         }
 
         // ====================================================================
-        // STAGE 3/8: DOCKER BUILD
+        // STAGE 3/10: SONARQUBE ANALYSIS
+        // Goal: static analysis of backend (Java) + frontend (TypeScript).
+        // Scanner sends sources + coverage to SonarQube; server computes
+        // bugs/vulnerabilities/code smells/duplication. Next stage enforces gate.
+        //
+        // JUNIOR What -> Why -> Misuse:
+        //   Backend: ./mvnw verify sonar:sonar (sonar-maven-plugin in pom.xml).
+        //     `verify` builds classes + JaCoCo XML first; without compiled
+        //     classes Java rules are skipped ("java.binaries not found").
+        //   Frontend: docker run sonarsource/sonar-scanner-cli with
+        //     sonar-project.properties at root (no npm dep needed).
+        //   Token: withCredentials `sonar-token` (Secret text, see header).
+        //     NEVER hardcode, NEVER echo. Jenkins masks it in logs.
+        // Full guide: SONARQ.md §5-§7.
+        // ====================================================================
+        stage('SonarQube Analysis') {
+            steps {
+                // STEP 1: Backend analysis (JaCoCo + Sonar in one Maven run).
+                // `verify` (not just `package`) so surefire + jacoco:report run
+                // and backend/target/site/jacoco/jacoco.xml exists for Sonar.
+                withCredentials([string(
+                    credentialsId: "${SONAR_CREDENTIALS_ID}",
+                    variable: 'SONAR_TOKEN'
+                )]) {
+                    dir('backend') {
+                        sh '''
+                            chmod +x mvnw
+                            ./mvnw -B verify sonar:sonar \
+                              -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
+                              -Dsonar.host.url="$SONAR_HOST_URL" \
+                              -Dsonar.token="$SONAR_TOKEN"
+                        '''
+                    }
+                    // STEP 2: Frontend + full-repo analysis via scanner-cli.
+                    // Root sonar-project.properties already covers both modules;
+                    // backend re-send is skipped here via -Dsonar.sources override
+                    // so Java is not double-counted: frontend-only pass.
+                    // Retry wrapper: Hub pull can hit transient i/o timeouts.
+                    sh '''
+                        retry() {
+                          tries=$1; shift
+                          n=1
+                          while [ $n -le $tries ]; do
+                            echo "--- attempt $n/$tries: $* ---"
+                            if "$@"; then return 0; fi
+                            n=$((n + 1))
+                            if [ $n -le $tries ]; then echo "transient failure, sleeping 15s..."; sleep 15; fi
+                          done
+                          return 1
+                        }
+                        echo "=== SonarQube: frontend scan (scanner-cli) ==="
+                        retry 3 docker run --rm \
+                          -v "$PWD:/usr/src" -w /usr/src \
+                          -e SONAR_HOST_URL="$SONAR_HOST_URL" \
+                          -e SONAR_TOKEN="$SONAR_TOKEN" \
+                          sonarsource/sonar-scanner-cli \
+                          -Dsonar.projectKey="$SONAR_PROJECT_KEY-frontend" \
+                          -Dsonar.projectName="DevOps-AppGestionDesProjets-frontend" \
+                          -Dsonar.sources=frontend/src \
+                          -Dsonar.tests=frontend/src \
+                          -Dsonar.test.inclusions="**/*.spec.ts" \
+                          -Dsonar.exclusions="**/node_modules/**,**/dist/**,**/.angular/**,**/*.spec.ts" \
+                          -Dsonar.host.url="$SONAR_HOST_URL" \
+                          -Dsonar.token="$SONAR_TOKEN"
+                        echo "=== SonarQube analysis submitted: $SONAR_HOST_URL/dashboard?id=$SONAR_PROJECT_KEY ==="
+                    '''
+                }
+            }
+        }
+
+        // ====================================================================
+        // STAGE 4/10: QUALITY GATE
+        // Goal: FAIL the pipeline if SonarQube Quality Gate is RED.
+        // WHY NOT skip? Without this, analysis is decoration: buggy/vulnerable
+        // code still ships to Docker Hub. Gate = bugs, vulnerabilities, coverage.
+        // JUNIOR: polls api/qualitygates/project_status (no plugin needed).
+        // Needs SonarQube Scanner plugin? No — pure curl, same as Deploy verify.
+        // Tune gate in SonarQube UI > Quality Gates; default "Sonar way" used.
+        // ====================================================================
+        stage('Quality Gate') {
+            steps {
+                withCredentials([string(
+                    credentialsId: "${SONAR_CREDENTIALS_ID}",
+                    variable: 'SONAR_TOKEN'
+                )]) {
+                    sh '''
+                        echo "=== SonarQube Quality Gate: $SONAR_PROJECT_KEY ==="
+                        # SonarQube Compute Engine needs ~30-120s after analysis.
+                        for i in $(seq 1 20); do
+                          STATUS=$(curl -s -m 10 -u "$SONAR_TOKEN:" \
+                            "$SONAR_HOST_URL/api/qualitygates/project_status?projectKey=$SONAR_PROJECT_KEY" \
+                            | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4 || echo UNKNOWN)
+                          echo "gate status: $STATUS (attempt $i/20)"
+                          if [ "$STATUS" = "OK" ]; then echo "Quality Gate PASSED."; exit 0; fi
+                          if [ "$STATUS" = "ERROR" ]; then echo "ERROR: Quality Gate FAILED. Open $SONAR_HOST_URL/dashboard?id=$SONAR_PROJECT_KEY"; exit 1; fi
+                          sleep 15
+                        done
+                        echo "WARNING: Quality Gate still UNKNOWN after 5 min (server slow or first analysis)."
+                        echo "Check $SONAR_HOST_URL/dashboard?id=$SONAR_PROJECT_KEY manually."
+                        exit 1
+                    '''
+                }
+            }
+        }
+
+        // ====================================================================
+        // STAGE 5/10: DOCKER BUILD
         // Goal: build both production images, tagged immutably (:build-N).
         // Dockerfiles (already validated locally):
         //   backend:  maven:3.9-eclipse-temurin-17-alpine -> eclipse-temurin:17-jre-alpine
@@ -213,7 +342,7 @@ pipeline {
         }
 
         // ====================================================================
-        // STAGE 4/8: LOGIN DOCKER HUB (agent-level auth check)
+        // STAGE 6/10: LOGIN DOCKER HUB (agent-level auth check)
         // Goal: confirm the agent OS user is logged in to Docker Hub.
         // WHY NOT withCredentials? The `dockerhub-credentials` entry is not
         // resolvable on this Jenkins ("Could not find credentials entry"),
@@ -258,7 +387,7 @@ pipeline {
         }
 
         // ====================================================================
-        // STAGE 5/8: TAG IMAGES
+        // STAGE 7/10: TAG IMAGES
         // Goal: add the floating `:latest` tag on top of the immutable
         // `:build-N` tag, so compose/manual runs can track latest while every
         // build stays rollback-able via its number.
@@ -275,7 +404,7 @@ pipeline {
         }
 
         // ====================================================================
-        // STAGE 6/8: PUSH IMAGES
+        // STAGE 8/10: PUSH IMAGES
         // Goal: publish all 4 tags to Docker Hub, then pull the immutable tags
         // back as proof the registry really has them (cheap, fails loudly if
         // the push silently broke).
@@ -311,7 +440,7 @@ pipeline {
         }
 
         // ====================================================================
-        // STAGE 7/8: DEPLOY / VERIFY
+        // STAGE 9/10: DEPLOY / VERIFY
         // Goal: redeploy the full stack on this host from the repo state and
         // prove it works end to end:
         //   db healthy -> backend answers :8080 -> frontend serves :4200.
@@ -351,7 +480,7 @@ pipeline {
         }
 
         // ====================================================================
-        // STAGE 8/8: PUSH (back to GitHub)
+        // STAGE 10/10: PUSH (back to GitHub)
         // Goal: tag this successful build and push the TAG to GitHub.
         // We push TAGS ONLY (not the `main` branch) to avoid an infinite loop:
         // pushing `main` would trigger githubPush() again -> new build -> push...
@@ -403,17 +532,18 @@ pipeline {
     post {
         always {
             echo 'Pipeline finished.'
-            // Archive the backend jar so you can download it from Jenkins UI.
+            // Archive the backend jar + coverage so you can download from Jenkins UI.
             archiveArtifacts artifacts: 'backend/target/*.jar', allowEmptyArchive: true, fingerprint: true
+            archiveArtifacts artifacts: 'backend/target/site/jacoco/*.xml,backend/target/surefire-reports/*.txt', allowEmptyArchive: true
             // NOTE: no `docker logout` here on purpose — Hub auth lives with
-            // the agent user (see stage 4); logging out would break the next build.
+            // the agent user (see Login stage); logging out would break next build.
         }
         success {
-            echo 'Checkout + Build + Docker Build + Login + Tag + Push + Deploy/Verify + Push succeeded!'
+            echo 'Checkout + Build + SonarQube Analysis + Quality Gate + Docker Build + Login + Tag + Push + Deploy/Verify + Push succeeded!'
         }
         failure {
             echo 'Pipeline failed - check stage logs above.'
-            // Dump recent stack logs to pinpoint db/backend/frontend failures.
+            // Dump recent stack logs to pinpoint db/backend/frontend/sonarqube failures.
             sh 'docker compose logs --tail=50 || true'
         }
     }

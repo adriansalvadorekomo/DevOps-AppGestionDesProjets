@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Deploy + verify the full stack: db healthy -> backend :8080 -> frontend :4200.
+# Deploy + verify the full stack: db healthy -> backend :8080 -> frontend :4200
+# + sonarqube :9000 (warn-only, quality data is not a deploy blocker here).
 #
 # DB password resolution (Compose precedence: shell env > .env file > default):
 #   - Local dev:  reads `.env` (gitignored) or falls back to compose defaults.
@@ -7,7 +8,11 @@
 #                 `mysql-root-password` credential; if that credential is
 #                 missing, the pipeline runs this script WITHOUT it and the
 #                 same compose defaults apply (dev password 'root').
-# Never echo secrets. Exit non-zero on any verification failure.
+# SonarQube: compose service `sonarqube` + `sonardb` start with the stack.
+# First boot takes 60-120s (Elasticsearch). Verify 4/4 only WARNS on failure
+# so a slow SonarQube never blocks app deploy (Quality Gate already enforced
+# earlier in Jenkins). See SONARQ.md.
+# Never echo secrets. Exit non-zero on any app verification failure.
 set -u
 
 echo "=== Deploy: (re)create full stack ==="
@@ -58,6 +63,21 @@ if [ "$CODE" != "200" ]; then
   echo "ERROR: SPA fallback route did not serve 200."
   docker compose logs --tail=50 frontend || true
   exit 1
+fi
+
+echo "=== Verify 4/4: sonarqube UP on :9000 (warn-only, max ~60s) ==="
+for i in $(seq 1 12); do
+  SQ=$(curl -s -m 5 http://localhost:9000/api/system/status || echo '{"status":"DOWN"}')
+  echo "sonarqube status: $SQ (attempt $i/12)"
+  if echo "$SQ" | grep -q UP; then break; fi
+  sleep 5
+done
+if ! curl -s -m 5 http://localhost:9000/api/system/status | grep -q UP; then
+  echo "WARNING: sonarqube not UP yet (first boot is slow). App deploy still OK."
+  echo "Check: docker compose logs --tail=50 sonarqube; guide: SONARQ.md §10."
+  docker compose logs --tail=20 sonarqube || true
+else
+  echo "sonarqube UP: http://localhost:9000"
 fi
 
 echo "=== Stack status ==="
