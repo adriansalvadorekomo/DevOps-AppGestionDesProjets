@@ -22,7 +22,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from c4kit import Box, Canvas, View, build  # noqa: E402
 
-READOUT = [("TESTS", "19 + 20"), ("LINE COVERAGE", "97.1% · 98.5%"), ("QUALITY GATES", "2 · SonarQube")]
+READOUT = [("TESTS", "28 + 20"), ("LINE COVERAGE", "98.4% · 98.5%"), ("QUALITY GATES", "2 · SonarQube")]
 COL = [32, 360, 688, 1016]  # four columns, 224 wide, 104 apart
 W = 224
 
@@ -55,7 +55,7 @@ def context_view(cv: Canvas):
     cv.node(pm, "person", "Person", "Project manager", None, ["Manages companies,", "teams and projects"], ["user"])
     cv.node(system, "container", "Software system", "Gestion des projets", "Spring Boot · Angular · MySQL",
             ["CRUD for companies, teams, projects and their", "details: 25 REST routes behind an Angular app.", "",
-             "19 backend and 20 frontend tests; both coverage", "reports are gated by SonarQube in Jenkins.", "",
+             "28 backend and 20 frontend tests; both coverage", "reports are gated by SonarQube in Jenkins.", "",
              "Runs on Docker Compose or Kubernetes (minikube);", "Prometheus, Grafana and Alertmanager watch",
              "the API."],
             ["springboot", "angular", "mysql", "kubernetes"], focal=True)
@@ -129,7 +129,7 @@ def container_view(cv: Canvas):
             ["Scrapes every 15 s;", "4 alert rules"], ["prometheus"])
     cv.node(am, "container", "Container", "Alertmanager", "Alertmanager 0.35 · :9093",
             ["critical → on-call;", "BackendDown mutes warnings"], ["prometheus"])
-    cv.node(sonar, "container", "Container", "SonarQube", "SonarQube 9.9 LTS · :9000",
+    cv.node(sonar, "container", "Container", "SonarQube", "SonarQube 26.11 · :9000",
             ["Gates the backend (JaCoCo)", "and the frontend (lcov)"], ["sonarqubeserver"], focal=True)
     cv.node(sonardb, "store", "Data store", "PostgreSQL 15", "sonardb · volume", ["Analysis history"], ["postgresql"])
     cv.node(jenkins, "external", "External", "Jenkins", "Jenkinsfile · 10 stages",
@@ -197,7 +197,7 @@ def component_view(cv: Canvas):
             ["mysql"])
     cv.node(prom, "external", "Container · outside", "Prometheus", "every 15 s", [], ["prometheus"])
 
-    cv.readout([("REST ROUTES", "25"), ("BACKEND TESTS", "19 · 97.1%"), ("FRONTEND TESTS", "20 · 98.5%")],
+    cv.readout([("REST ROUTES", "25"), ("BACKEND TESTS", "28 · 98.4%"), ("FRONTEND TESTS", "20 · 98.5%")],
                1248, 96)
     cv.legend(1000, [("container", "component"), ("focal", "the health gate: no DB, no traffic"),
                      ("store", "data store"), ("external", "outside the backend"), ("call", "call"),
