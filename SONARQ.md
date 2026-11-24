@@ -1,7 +1,7 @@
 # SONARQ — Learn Code Analysis With SonarQube From Scratch
 
 > Read this top to bottom once, then use it as revision notes.
-> Every example comes from THIS repo (Spring Boot backend + Angular frontend + SonarQube LTS).
+> Every example comes from THIS repo (Spring Boot backend + Angular frontend + SonarQube Community Build).
 > Goal: understand the **reasoning**, so you can reproduce it on any project —
 > and explain it in an interview without notes.
 
@@ -56,7 +56,7 @@ Browser ──► http://localhost:9000 (published port)
 |---|---|---|
 | **Server** | The web app that stores rules, shows issues, enforces gates. | `app-sonarqube` (`sonarqube:26.11.0.134175-community`), UI `:9000` |
 | **Database** | Where server keeps analysis history (not your app data). | `app-sonardb` (`postgres:15-alpine`), volume `sonardb_data` |
-| **Scanner** | CLI/Maven plugin that ships your code + coverage to the server. | `sonar-maven-plugin` 3.9.1.2184 (backend) + `sonarsource/sonar-scanner-cli` (frontend) |
+| **Scanner** | CLI/Maven plugin that ships your code + coverage to the server. | `sonar-maven-plugin` 5.9.0.7382 (backend) + `sonarsource/sonar-scanner-cli` (frontend) |
 | **Project Key** | Unique ID of your codebase in SonarQube. | `devops-appgestiondesprojets` (`sonar-project.properties`) |
 | **Token** | Password the scanner uses instead of your login. Like a PAT. | Jenkins credential `sonar-token` (Secret text), env `SONAR_TOKEN` |
 | **Quality Gate** | PASS/FAIL rule: "is this code shippable?" | Default "Sonar way": no new bugs/vulns, coverage on new code |
@@ -170,8 +170,8 @@ Quoting ours:
 What we added to `backend/pom.xml`:
 
 ```xml
-<jacoco.version>0.8.11</jacoco.version>
-<sonar-maven-plugin.version>3.9.1.2184</sonar-maven-plugin.version>
+<jacoco.version>0.8.16</jacoco.version>
+<sonar-maven-plugin.version>5.9.0.7382</sonar-maven-plugin.version>
 <!-- plugins: jacoco:prepare-agent + report, sonar:sonar -->
 ```
 
@@ -199,27 +199,28 @@ Check it: `ls backend/target/site/jacoco/jacoco.xml` (exists after `verify`),
 
 ## 5. Frontend Analysis (Angular 22 + TypeScript)
 
-No `package.json` change needed — the standalone scanner does the work:
+Two steps: tests with coverage, then the standalone scanner.
 
 ```bash
-docker run --rm -v "$PWD:/usr/src" -w /usr/src \
-  -e SONAR_HOST_URL=http://sonarqube:9000 -e SONAR_TOKEN="$SONAR_TOKEN" \
-  sonarsource/sonar-scanner-cli \
+(cd frontend && npm run test:ci)     # Vitest, writes frontend/coverage/frontend/lcov.info
+docker run --rm --network host -v "$PWD:/usr/src" -w /usr/src \
+  -e SONAR_HOST_URL=http://localhost:9000 -e SONAR_TOKEN="$SONAR_TOKEN" \
+  sonarsource/sonar-scanner-cli:12.5.0.4351_8.5.0 \
   -Dsonar.projectKey=devops-appgestiondesprojets-frontend \
-  -Dsonar.sources=frontend/src \
-  -Dsonar.exclusions="**/node_modules/**,**/dist/**,**/.angular/**"
+  -Dsonar.sources=frontend/src -Dsonar.tests=frontend/src \
+  -Dsonar.test.inclusions="**/*.spec.ts" \
+  -Dsonar.exclusions="**/node_modules/**,**/dist/**,**/.angular/**,**/*.spec.ts" \
+  -Dsonar.javascript.lcov.reportPaths=frontend/coverage/frontend/lcov.info
 ```
 
-*What → Why → Misuse:* scanner-cli is a Docker image (like `nginx:alpine`):
-no Node install, no Jenkins plugin, version pinned by Hub tag. We run it with
-`-v $PWD:/usr/src` so it sees the checked-out code, and `--network` implicitly
-via Compose defaults when run on the same host (or explicit `--network app-net`
-if resolving `sonarqube` hostname from inside).
+*What → Why → Misuse:* scanner-cli is a Docker image (like `nginx:alpine`): no extra
+Node install, no Jenkins plugin, version pinned by tag. `-v $PWD:/usr/src` lets it read the
+checked-out code. `--network host` matters: without it, `localhost:9000` inside the scanner
+container is the container itself and the upload fails. (Inside the Compose network, use
+`--network app-net` and `http://sonarqube:9000` instead.)
 
-Coverage (phase 2, optional today): `npm run test -- --coverage` writes
-`frontend/coverage/lcov.info` via vitest; scanner picks it up automatically
-through `sonar.typescript.lcov.reportPaths`. First pipeline runs without it —
-bugs/smells still report, coverage appears once tests run.
+Coverage is not optional: the scanner reads the lcov file and the quality gate checks
+coverage on new code, so the tests must run first (Jenkins does both in stage 3).
 
 ---
 
@@ -369,6 +370,16 @@ Never cross-wire app DB and Sonar DB (§2).
 update the *one* place storing it (Jenkins `sonar-token`). Same rule as
 DOCKERIZER §16.10: secrets live in exactly one secure place each, never in two.
 
+### 9.6 Upgrading from SonarQube 9.9 (`lts-community`)
+
+*Symptom:* the UI shows "You're running a version of SonarQube that is no longer active", and the
+frontend log shows `Failed to create program: Argument for '--module' option must be ...`.
+*Diagnosis:* `sonarqube:lts-community` still resolves to 9.9. Its TypeScript analyzer predates
+Angular 22's `"module": "preserve"`, so type-aware rules are skipped without failing the scan.
+*Fix:* compose now pins `sonarqube:26.11.0.134175-community`. An existing 9.9 data volume must
+follow SonarSource's upgrade path; for a local lab, `docker compose down` and removing the
+`sonarqube_*` and `sonardb_data` volumes is simpler (analyses are rebuilt by the next pipeline run).
+
 ### The meta-lesson (interview-worthy)
 
 > Reproduce first, blame rules last. Every incident above was solved by the same loop:
@@ -388,7 +399,7 @@ sonar-project.properties ──configures──► Scanner ──ships──► 
                                                   PASS → ship / FAIL → fix
 ```
 
-Say it in an interview like this: *"I added SonarQube LTS + Postgres to Compose,
+Say it in an interview like this: *"I added SonarQube (pinned Community Build) + Postgres to Compose,
 configured one properties file for Java + TypeScript with JaCoCo/LCOV coverage,
 and gated the Jenkins pipeline: backend via sonar-maven-plugin, frontend via
 scanner-cli Docker image, token via Jenkins credentials — red gate fails the build

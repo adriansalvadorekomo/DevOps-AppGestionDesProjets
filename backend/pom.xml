@@ -37,6 +37,8 @@
         <jacoco.version>0.8.16</jacoco.version>
         <sonar-maven-plugin.version>5.9.0.7382</sonar-maven-plugin.version>
         <sonar.projectKey>devops-appgestiondesprojets</sonar.projectKey>
+        <!-- Without it the project is named after the artifactId ("backend"). -->
+        <sonar.projectName>DevOps-AppGestionDesProjets</sonar.projectName>
     </properties>
     <dependencies>
         <dependency>
