@@ -1,3 +1,9 @@
 # Secrets & local-only files (never commit .env — see .env.example)
 .env
 !.env.example
+
+# Kubernetes secrets (template: k8s/secrets.env.example)
+k8s/secrets.env
+
+# Python bytecode (diagram builder)
+__pycache__/

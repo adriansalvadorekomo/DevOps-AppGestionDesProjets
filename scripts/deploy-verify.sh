@@ -9,7 +9,7 @@
 #                 missing, the pipeline runs this script WITHOUT it and the
 #                 same compose defaults apply (dev password 'root').
 # SonarQube: compose service `sonarqube` + `sonardb` start with the stack.
-# First boot takes 60-120s (Elasticsearch). Verify 4/4 only WARNS on failure
+# First boot takes 60-120s (Elasticsearch). Verify 4/5 (SonarQube) only WARNS on failure
 # so a slow SonarQube never blocks app deploy (Quality Gate already enforced
 # earlier in Jenkins). See SONARQ.md.
 # Never echo secrets. Exit non-zero on any app verification failure.
@@ -19,7 +19,7 @@ echo "=== Deploy: (re)create full stack ==="
 docker compose up -d --build
 docker compose ps
 
-echo "=== Verify 1/3: db becomes healthy (max ~120s) ==="
+echo "=== Verify 1/5: db becomes healthy (max ~120s) ==="
 for i in $(seq 1 24); do
   STATUS=$(docker inspect app-db --format '{{.State.Health.Status}}')
   echo "db health: $STATUS (attempt $i/24)"
@@ -33,7 +33,7 @@ if [ "$STATUS" != "healthy" ]; then
   exit 1
 fi
 
-echo "=== Verify 2/3: backend answers on :8080 (max ~120s) ==="
+echo "=== Verify 2/5: backend answers on :8080 (max ~120s) ==="
 for i in $(seq 1 24); do
   CODE=$(curl -s -m 5 -o /dev/null -w '%{http_code}' http://localhost:8080/entreprise/all || echo 000)
   echo "backend /entreprise/all: HTTP $CODE (attempt $i/24)"
@@ -49,7 +49,7 @@ fi
 curl -s -m 10 http://localhost:8080/entreprise/all
 echo
 
-echo "=== Verify 3/3: frontend serves on :4200 (incl. SPA fallback) ==="
+echo "=== Verify 3/5: frontend serves on :4200 (incl. SPA fallback) ==="
 CODE=$(curl -s -m 10 -o /dev/null -w '%{http_code}' http://localhost:4200/ || echo 000)
 echo "frontend /: HTTP $CODE"
 if [ "$CODE" != "200" ]; then
@@ -65,7 +65,7 @@ if [ "$CODE" != "200" ]; then
   exit 1
 fi
 
-echo "=== Verify 4/4: sonarqube UP on :9000 (warn-only, max ~60s) ==="
+echo "=== Verify 4/5: sonarqube UP on :9000 (warn-only, max ~60s) ==="
 for i in $(seq 1 12); do
   SQ=$(curl -s -m 5 http://localhost:9000/api/system/status || echo '{"status":"DOWN"}')
   echo "sonarqube status: $SQ (attempt $i/12)"
@@ -78,6 +78,21 @@ if ! curl -s -m 5 http://localhost:9000/api/system/status | grep -q UP; then
   docker compose logs --tail=20 sonarqube || true
 else
   echo "sonarqube UP: http://localhost:9000"
+fi
+
+echo "=== Verify 5/5: the frontend proxies /api to the backend, which reports UP ==="
+CODE=$(curl -s -m 10 -o /dev/null -w '%{http_code}' http://localhost:4200/api/entreprise/all || echo 000)
+echo "frontend /api/entreprise/all (nginx → backend): HTTP $CODE"
+if [ "$CODE" != "200" ]; then
+  echo "ERROR: the /api proxy in frontend/nginx.conf did not reach the backend."
+  docker compose logs --tail=50 frontend || true
+  exit 1
+fi
+HEALTH=$(curl -s -m 10 http://localhost:8080/actuator/health || echo '')
+echo "backend /actuator/health: $HEALTH"
+if ! echo "$HEALTH" | grep -q '"status":"UP"'; then
+  echo "ERROR: backend health is not UP."
+  exit 1
 fi
 
 echo "=== Stack status ==="

@@ -36,6 +36,10 @@ services:
       SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME:-root}
       SPRING_DATASOURCE_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
       SPRING_JPA_HIBERNATE_DDL_AUTO: ${SPRING_JPA_HIBERNATE_DDL_AUTO:-update}
+      # Size the heap from the container limit, as in k8s/backend.yaml. Without a
+      # limit the JVM sizes itself from the host's RAM.
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=75
+    mem_limit: 640m
     ports:
       - "8080:8080"
     networks:
@@ -84,10 +88,13 @@ services:
   # JUNIOR: What is this?
   # SonarQube = static-analysis server: scanners send sources + coverage,
   # server computes bugs/vulnerabilities/duplication/coverage, Quality Gate
-  # says PASS/FAIL. UI at http://localhost:9000 (admin/admin on first boot).
-  # Scanner -> http://sonarqube:9000 inside Compose; browser -> localhost:9000.
+  # says PASS/FAIL. UI at http://localhost:9000 (admin/admin on first boot,
+  # then a forced password change). Scanner -> http://sonarqube:9000 inside
+  # Compose; browser and Jenkins (same host) -> localhost:9000.
+  # Pinned Community Build: `lts-community` still resolves to 9.9, which
+  # SonarSource no longer supports. Upgrading an existing 9.9 volume: SONARQ.md.
   sonarqube:
-    image: sonarqube:lts-community
+    image: sonarqube:26.11.0.134175-community
     container_name: app-sonarqube
     depends_on:
       sonardb:
@@ -99,7 +106,7 @@ services:
       # Token is NEVER baked here: scanners pass SONAR_TOKEN at analysis time
       # (Jenkins credential `sonar-token`, see Jenkinsfile + SONARQ.md).
     ports:
-      - "9000:9000"
+      - "127.0.0.1:9000:9000"   # holds the admin account: not exposed on the LAN
     volumes:
       - sonarqube_data:/opt/sonarqube/data
       - sonarqube_logs:/opt/sonarqube/logs
@@ -107,11 +114,74 @@ services:
     networks:
       - app-net
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:9000/api/system/status | grep -q UP || exit 1"]
+      # The image has no curl or wget: ask /api/system/status over bash's /dev/tcp.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /api/system/status HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && grep -q '\"status\":\"UP\"' <&3"]
       interval: 30s
       timeout: 10s
       retries: 5
       start_period: 120s
+    restart: unless-stopped
+
+  # ── Monitoring · opt-in: docker compose --profile monitoring up -d ──────────
+  # Prometheus scrapes the backend's /actuator/prometheus every 15 s and evaluates
+  # monitoring/prometheus/alerts.yml; Alertmanager groups and routes what fires;
+  # Grafana opens on the provisioned dashboard "Gestion des projets · backend".
+  # All bound to 127.0.0.1.
+  prometheus:
+    image: prom/prometheus:v3.16.0
+    container_name: app-prometheus
+    profiles: [monitoring]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+    volumes:
+      - ./monitoring/prometheus:/etc/prometheus:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    networks:
+      - app-net
+    depends_on:
+      - backend
+      - alertmanager
+    restart: unless-stopped
+
+  alertmanager:
+    image: prom/alertmanager:v0.35.0
+    container_name: app-alertmanager
+    profiles: [monitoring]
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    volumes:
+      - ./monitoring/alertmanager:/etc/alertmanager:ro
+      - alertmanager_data:/alertmanager
+    ports:
+      - "127.0.0.1:9093:9093"
+    networks:
+      - app-net
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.2.6
+    container_name: app-grafana
+    profiles: [monitoring]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      # Read-only anonymous access to the dashboards (local use only).
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/backend.json
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3000:3000"
+    networks:
+      - app-net
+    depends_on:
+      - prometheus
     restart: unless-stopped
 
 networks:
@@ -124,3 +194,6 @@ volumes:
   sonarqube_data:
   sonarqube_logs:
   sonarqube_extensions:
+  prometheus_data:
+  alertmanager_data:
+  grafana_data:

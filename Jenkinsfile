@@ -54,10 +54,10 @@
 //   - Docker images: maven:3.9-eclipse-temurin-17-alpine (build),
 //     eclipse-temurin:17-jre-alpine (backend runtime), node:22-alpine (build),
 //     nginx:alpine (frontend runtime), mysql:8.0 (database),
-//     sonarqube:lts-community + postgres:15-alpine (code quality, see SONARQ.md).
+//     sonarqube:26.11.0.134175-community + postgres:15-alpine (code quality, see SONARQ.md).
 //   - SonarQube: server http://localhost:9000 (compose service `sonarqube`),
-//     scanner sonarsource/sonar-scanner-cli (frontend) + sonar-maven-plugin
-//     3.9.1.2184 (backend) + JaCoCo 0.8.11 coverage. Project key
+//     scanner sonarsource/sonar-scanner-cli:12.5.0.4351_8.5.0 (frontend) + sonar-maven-plugin
+//     5.9.0.7382 (backend) + JaCoCo 0.8.16 coverage. Project key
 //     `devops-appgestiondesprojets` (sonar-project.properties at root).
 // ============================================================================
 
@@ -87,6 +87,16 @@ pipeline {
     // 2. pollSCM() = fallback: Jenkins checks GitHub every 2 min if webhook fails.
     // NOTE: pushing to Docker Hub never retriggers this pipeline (only GitHub
     // pushes do), and stage 10 pushes Git TAGS only (not `main`) to avoid a loop.
+    // BRANCH: build any branch (a PR branch before merge), not only main.
+    // PUBLISH: off = CI only (build, test, analyse, quality gate, image build);
+    // nothing is pushed to Docker Hub or GitHub and nothing is redeployed.
+    // Webhook and polling builds use the defaults: main, published.
+    parameters {
+        string(name: 'BRANCH', defaultValue: 'main', description: 'Branch to build')
+        booleanParam(name: 'PUBLISH', defaultValue: true,
+                     description: 'Push images to Docker Hub, redeploy, push the build tag')
+    }
+
     triggers {
         githubPush()
         pollSCM('H/2 * * * *')
@@ -101,7 +111,6 @@ pipeline {
         PATH = "${JAVA_HOME}/bin:${PATH}"
         // Your GitHub repo (found via `git remote -v`).
         GIT_REPO_URL = 'https://github.com/adriansalvadorekomo/DevOps-AppGestionDesProjets.git'
-        GIT_BRANCH = 'main'
         // JUNIOR: Jenkins Credentials ID for GitHub.
         // Create it once: Jenkins > Manage Jenkins > Credentials >
         // Add "Username with password" (username = GitHub user, password = GitHub PAT
@@ -134,7 +143,7 @@ pipeline {
             steps {
                 // `checkout scm` alone uses the job config; explicit `git`
                 // below guarantees the credentialsId is used.
-                git branch: "${GIT_BRANCH}",
+                git branch: "${params.BRANCH ?: 'main'}",
                     credentialsId: "${GITHUB_CREDENTIALS_ID}",
                     url: "${GIT_REPO_URL}"
             }
@@ -248,18 +257,23 @@ pipeline {
                           done
                           return 1
                         }
+                        echo "=== Frontend unit tests + coverage (vitest → frontend/coverage/frontend/lcov.info) ==="
+                        (cd frontend && npm run test:ci)
                         echo "=== SonarQube: frontend scan (scanner-cli) ==="
-                        retry 3 docker run --rm \
+                        # --network host: "localhost:9000" must be the Jenkins host's SonarQube,
+                        # not the scanner container itself.
+                        retry 3 docker run --rm --network host \
                           -v "$PWD:/usr/src" -w /usr/src \
                           -e SONAR_HOST_URL="$SONAR_HOST_URL" \
                           -e SONAR_TOKEN="$SONAR_TOKEN" \
-                          sonarsource/sonar-scanner-cli \
+                          sonarsource/sonar-scanner-cli:12.5.0.4351_8.5.0 \
                           -Dsonar.projectKey="$SONAR_PROJECT_KEY-frontend" \
                           -Dsonar.projectName="DevOps-AppGestionDesProjets-frontend" \
                           -Dsonar.sources=frontend/src \
                           -Dsonar.tests=frontend/src \
                           -Dsonar.test.inclusions="**/*.spec.ts" \
                           -Dsonar.exclusions="**/node_modules/**,**/dist/**,**/.angular/**,**/*.spec.ts" \
+                          -Dsonar.javascript.lcov.reportPaths=frontend/coverage/frontend/lcov.info \
                           -Dsonar.host.url="$SONAR_HOST_URL" \
                           -Dsonar.token="$SONAR_TOKEN"
                         echo "=== SonarQube analysis submitted: $SONAR_HOST_URL/dashboard?id=$SONAR_PROJECT_KEY ==="
@@ -283,22 +297,8 @@ pipeline {
                     credentialsId: "${SONAR_CREDENTIALS_ID}",
                     variable: 'SONAR_TOKEN'
                 )]) {
-                    sh '''
-                        echo "=== SonarQube Quality Gate: $SONAR_PROJECT_KEY ==="
-                        # SonarQube Compute Engine needs ~30-120s after analysis.
-                        for i in $(seq 1 20); do
-                          STATUS=$(curl -s -m 10 -u "$SONAR_TOKEN:" \
-                            "$SONAR_HOST_URL/api/qualitygates/project_status?projectKey=$SONAR_PROJECT_KEY" \
-                            | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4 || echo UNKNOWN)
-                          echo "gate status: $STATUS (attempt $i/20)"
-                          if [ "$STATUS" = "OK" ]; then echo "Quality Gate PASSED."; exit 0; fi
-                          if [ "$STATUS" = "ERROR" ]; then echo "ERROR: Quality Gate FAILED. Open $SONAR_HOST_URL/dashboard?id=$SONAR_PROJECT_KEY"; exit 1; fi
-                          sleep 15
-                        done
-                        echo "WARNING: Quality Gate still UNKNOWN after 5 min (server slow or first analysis)."
-                        echo "Check $SONAR_HOST_URL/dashboard?id=$SONAR_PROJECT_KEY manually."
-                        exit 1
-                    '''
+                    // Both analyses are gated: a red frontend stops the build like a red backend.
+                    sh 'bash scripts/quality-gate.sh "$SONAR_PROJECT_KEY" "$SONAR_PROJECT_KEY-frontend"'
                 }
             }
         }
@@ -330,11 +330,11 @@ pipeline {
                       return 1
                     }
                     echo "=== Building backend image ==="
-                    retry 3 docker build ./backend -t "$DOCKERHUB_NAMESPACE/backend:$IMAGE_TAG"
-                    docker image inspect "$DOCKERHUB_NAMESPACE/backend:$IMAGE_TAG" > /dev/null
+                    retry 3 docker build ./backend -t "$DOCKERHUB_NAMESPACE/gestion-projets-backend:$IMAGE_TAG"
+                    docker image inspect "$DOCKERHUB_NAMESPACE/gestion-projets-backend:$IMAGE_TAG" > /dev/null
                     echo "=== Building frontend image ==="
-                    retry 3 docker build ./frontend -t "$DOCKERHUB_NAMESPACE/frontend:$IMAGE_TAG"
-                    docker image inspect "$DOCKERHUB_NAMESPACE/frontend:$IMAGE_TAG" > /dev/null
+                    retry 3 docker build ./frontend -t "$DOCKERHUB_NAMESPACE/gestion-projets-frontend:$IMAGE_TAG"
+                    docker image inspect "$DOCKERHUB_NAMESPACE/gestion-projets-frontend:$IMAGE_TAG" > /dev/null
                     echo "=== Built images ==="
                     docker images | grep "$DOCKERHUB_NAMESPACE" || true
                 '''
@@ -356,6 +356,7 @@ pipeline {
         // would wipe this agent-level auth after every build.
         // ====================================================================
         stage('Login Docker Hub') {
+            when { expression { params.PUBLISH != false } }
             steps {
                 echo '=== Stage: Login Docker Hub (agent-level auth check) ==='
                 sh '''
@@ -393,10 +394,11 @@ pipeline {
         // build stays rollback-able via its number.
         // ====================================================================
         stage('Tag Images') {
+            when { expression { params.PUBLISH != false } }
             steps {
                 sh '''
-                    docker tag "$DOCKERHUB_NAMESPACE/backend:$IMAGE_TAG" "$DOCKERHUB_NAMESPACE/backend:latest"
-                    docker tag "$DOCKERHUB_NAMESPACE/frontend:$IMAGE_TAG" "$DOCKERHUB_NAMESPACE/frontend:latest"
+                    docker tag "$DOCKERHUB_NAMESPACE/gestion-projets-backend:$IMAGE_TAG" "$DOCKERHUB_NAMESPACE/gestion-projets-backend:latest"
+                    docker tag "$DOCKERHUB_NAMESPACE/gestion-projets-frontend:$IMAGE_TAG" "$DOCKERHUB_NAMESPACE/gestion-projets-frontend:latest"
                     echo "=== Tagged images ==="
                     docker images | grep "$DOCKERHUB_NAMESPACE" || true
                 '''
@@ -413,6 +415,7 @@ pipeline {
 //     twelvy1400/frontend:build-N + :latest
         // ====================================================================
         stage('Push Images') {
+            when { expression { params.PUBLISH != false } }
             steps {
                 sh '''
                     retry() {
@@ -427,14 +430,14 @@ pipeline {
                       return 1
                     }
                     echo "=== Pushing backend ==="
-                    retry 3 docker push "$DOCKERHUB_NAMESPACE/backend:$IMAGE_TAG"
-                    retry 3 docker push "$DOCKERHUB_NAMESPACE/backend:latest"
+                    retry 3 docker push "$DOCKERHUB_NAMESPACE/gestion-projets-backend:$IMAGE_TAG"
+                    retry 3 docker push "$DOCKERHUB_NAMESPACE/gestion-projets-backend:latest"
                     echo "=== Pushing frontend ==="
-                    retry 3 docker push "$DOCKERHUB_NAMESPACE/frontend:$IMAGE_TAG"
-                    retry 3 docker push "$DOCKERHUB_NAMESPACE/frontend:latest"
+                    retry 3 docker push "$DOCKERHUB_NAMESPACE/gestion-projets-frontend:$IMAGE_TAG"
+                    retry 3 docker push "$DOCKERHUB_NAMESPACE/gestion-projets-frontend:latest"
                     echo "=== Registry proof: pull immutable tags back ==="
-                    retry 3 docker pull "$DOCKERHUB_NAMESPACE/backend:$IMAGE_TAG"
-                    retry 3 docker pull "$DOCKERHUB_NAMESPACE/frontend:$IMAGE_TAG"
+                    retry 3 docker pull "$DOCKERHUB_NAMESPACE/gestion-projets-backend:$IMAGE_TAG"
+                    retry 3 docker pull "$DOCKERHUB_NAMESPACE/gestion-projets-frontend:$IMAGE_TAG"
                 '''
             }
         }
@@ -457,6 +460,7 @@ pipeline {
         // instead of a cryptic failure. The script itself never echoes secrets.
         // ====================================================================
         stage('Deploy / Verify') {
+            when { expression { params.PUBLISH != false } }
             steps {
                 script {
                     try {
@@ -487,6 +491,7 @@ pipeline {
         // (Docker Hub pushes never trigger this pipeline — only GitHub does.)
         // ====================================================================
         stage('Push') {
+            when { expression { params.PUBLISH != false } }
             steps {
                 // `withCredentials` safely injects GitHub user + token as
                 // env vars. Jenkins masks them in logs. Never hardcode tokens!

@@ -2,6 +2,7 @@ package tn.esprit.backend.service.impl;
 
 import lombok.AllArgsConstructor;
 import org.springframework.stereotype.Service;
+import tn.esprit.backend.exception.ApiErrors;
 import tn.esprit.backend.entity.Projet;
 import tn.esprit.backend.entity.ProjetDetaille;
 import tn.esprit.backend.repository.ProjetDetailleRepository;
@@ -49,8 +50,8 @@ public class ProjetDetailleServiceImpl implements IProjetDetailleService {
 
     @Override
     public ProjetDetaille assignProjetDetailleToProjet(Long projetDetailleId, Long projetId) {
-        ProjetDetaille projetDetaille = projetDetailleRepository.findById(projetDetailleId).orElse(null);
-        Projet projet = projetRepository.findById(projetId).orElse(null);
+        ProjetDetaille projetDetaille = projetDetailleRepository.findById(projetDetailleId).orElseThrow(() -> ApiErrors.notFound("ProjetDetaille", projetDetailleId));
+        Projet projet = projetRepository.findById(projetId).orElseThrow(() -> ApiErrors.notFound("Projet", projetId));
         projetDetaille.setProjet(projet);
         return projetDetailleRepository.save(projetDetaille);
     }
