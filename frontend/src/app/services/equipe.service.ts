@@ -5,7 +5,7 @@ import { Equipe } from '../models/equipe.model';
 @Injectable({ providedIn: 'root' })
 export class EquipeService {
   private http = inject(HttpClient);
-  private api = 'http://localhost:8080/equipe';
+  private api = '/api/equipe';
 
   getAll()              { return this.http.get<Equipe[]>(`${this.api}/all`); }
   getById(id: number)   { return this.http.get<Equipe>(`${this.api}/get/${id}`); }

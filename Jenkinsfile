@@ -248,6 +248,8 @@ pipeline {
                           done
                           return 1
                         }
+                        echo "=== Frontend unit tests + coverage (vitest → frontend/coverage/frontend/lcov.info) ==="
+                        (cd frontend && npm run test:ci)
                         echo "=== SonarQube: frontend scan (scanner-cli) ==="
                         retry 3 docker run --rm \
                           -v "$PWD:/usr/src" -w /usr/src \
@@ -260,6 +262,7 @@ pipeline {
                           -Dsonar.tests=frontend/src \
                           -Dsonar.test.inclusions="**/*.spec.ts" \
                           -Dsonar.exclusions="**/node_modules/**,**/dist/**,**/.angular/**,**/*.spec.ts" \
+                          -Dsonar.javascript.lcov.reportPaths=frontend/coverage/frontend/lcov.info \
                           -Dsonar.host.url="$SONAR_HOST_URL" \
                           -Dsonar.token="$SONAR_TOKEN"
                         echo "=== SonarQube analysis submitted: $SONAR_HOST_URL/dashboard?id=$SONAR_PROJECT_KEY ==="
@@ -283,22 +286,8 @@ pipeline {
                     credentialsId: "${SONAR_CREDENTIALS_ID}",
                     variable: 'SONAR_TOKEN'
                 )]) {
-                    sh '''
-                        echo "=== SonarQube Quality Gate: $SONAR_PROJECT_KEY ==="
-                        # SonarQube Compute Engine needs ~30-120s after analysis.
-                        for i in $(seq 1 20); do
-                          STATUS=$(curl -s -m 10 -u "$SONAR_TOKEN:" \
-                            "$SONAR_HOST_URL/api/qualitygates/project_status?projectKey=$SONAR_PROJECT_KEY" \
-                            | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4 || echo UNKNOWN)
-                          echo "gate status: $STATUS (attempt $i/20)"
-                          if [ "$STATUS" = "OK" ]; then echo "Quality Gate PASSED."; exit 0; fi
-                          if [ "$STATUS" = "ERROR" ]; then echo "ERROR: Quality Gate FAILED. Open $SONAR_HOST_URL/dashboard?id=$SONAR_PROJECT_KEY"; exit 1; fi
-                          sleep 15
-                        done
-                        echo "WARNING: Quality Gate still UNKNOWN after 5 min (server slow or first analysis)."
-                        echo "Check $SONAR_HOST_URL/dashboard?id=$SONAR_PROJECT_KEY manually."
-                        exit 1
-                    '''
+                    // Both analyses are gated: a red frontend stops the build like a red backend.
+                    sh 'bash scripts/quality-gate.sh "$SONAR_PROJECT_KEY" "$SONAR_PROJECT_KEY-frontend"'
                 }
             }
         }
@@ -330,11 +319,11 @@ pipeline {
                       return 1
                     }
                     echo "=== Building backend image ==="
-                    retry 3 docker build ./backend -t "$DOCKERHUB_NAMESPACE/backend:$IMAGE_TAG"
-                    docker image inspect "$DOCKERHUB_NAMESPACE/backend:$IMAGE_TAG" > /dev/null
+                    retry 3 docker build ./backend -t "$DOCKERHUB_NAMESPACE/gestion-projets-backend:$IMAGE_TAG"
+                    docker image inspect "$DOCKERHUB_NAMESPACE/gestion-projets-backend:$IMAGE_TAG" > /dev/null
                     echo "=== Building frontend image ==="
-                    retry 3 docker build ./frontend -t "$DOCKERHUB_NAMESPACE/frontend:$IMAGE_TAG"
-                    docker image inspect "$DOCKERHUB_NAMESPACE/frontend:$IMAGE_TAG" > /dev/null
+                    retry 3 docker build ./frontend -t "$DOCKERHUB_NAMESPACE/gestion-projets-frontend:$IMAGE_TAG"
+                    docker image inspect "$DOCKERHUB_NAMESPACE/gestion-projets-frontend:$IMAGE_TAG" > /dev/null
                     echo "=== Built images ==="
                     docker images | grep "$DOCKERHUB_NAMESPACE" || true
                 '''
@@ -395,8 +384,8 @@ pipeline {
         stage('Tag Images') {
             steps {
                 sh '''
-                    docker tag "$DOCKERHUB_NAMESPACE/backend:$IMAGE_TAG" "$DOCKERHUB_NAMESPACE/backend:latest"
-                    docker tag "$DOCKERHUB_NAMESPACE/frontend:$IMAGE_TAG" "$DOCKERHUB_NAMESPACE/frontend:latest"
+                    docker tag "$DOCKERHUB_NAMESPACE/gestion-projets-backend:$IMAGE_TAG" "$DOCKERHUB_NAMESPACE/gestion-projets-backend:latest"
+                    docker tag "$DOCKERHUB_NAMESPACE/gestion-projets-frontend:$IMAGE_TAG" "$DOCKERHUB_NAMESPACE/gestion-projets-frontend:latest"
                     echo "=== Tagged images ==="
                     docker images | grep "$DOCKERHUB_NAMESPACE" || true
                 '''
@@ -427,14 +416,14 @@ pipeline {
                       return 1
                     }
                     echo "=== Pushing backend ==="
-                    retry 3 docker push "$DOCKERHUB_NAMESPACE/backend:$IMAGE_TAG"
-                    retry 3 docker push "$DOCKERHUB_NAMESPACE/backend:latest"
+                    retry 3 docker push "$DOCKERHUB_NAMESPACE/gestion-projets-backend:$IMAGE_TAG"
+                    retry 3 docker push "$DOCKERHUB_NAMESPACE/gestion-projets-backend:latest"
                     echo "=== Pushing frontend ==="
-                    retry 3 docker push "$DOCKERHUB_NAMESPACE/frontend:$IMAGE_TAG"
-                    retry 3 docker push "$DOCKERHUB_NAMESPACE/frontend:latest"
+                    retry 3 docker push "$DOCKERHUB_NAMESPACE/gestion-projets-frontend:$IMAGE_TAG"
+                    retry 3 docker push "$DOCKERHUB_NAMESPACE/gestion-projets-frontend:latest"
                     echo "=== Registry proof: pull immutable tags back ==="
-                    retry 3 docker pull "$DOCKERHUB_NAMESPACE/backend:$IMAGE_TAG"
-                    retry 3 docker pull "$DOCKERHUB_NAMESPACE/frontend:$IMAGE_TAG"
+                    retry 3 docker pull "$DOCKERHUB_NAMESPACE/gestion-projets-backend:$IMAGE_TAG"
+                    retry 3 docker pull "$DOCKERHUB_NAMESPACE/gestion-projets-frontend:$IMAGE_TAG"
                 '''
             }
         }

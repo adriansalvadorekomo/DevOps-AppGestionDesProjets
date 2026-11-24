@@ -1,0 +1,18 @@
+# kubectl apply -k k8s/   (after: cp k8s/secrets.env.example k8s/secrets.env and edit it)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: gestion-projets
+resources:
+  - namespace.yaml
+  - mysql.yaml
+  - backend.yaml
+  - frontend.yaml
+configMapGenerator:
+  - name: app-config
+    literals:
+      - MYSQL_DATABASE=test_db
+      - MYSQL_USER=gestion
+secretGenerator:
+  - name: app-secrets
+    envs:
+      - secrets.env      # git-ignored; template: secrets.env.example
