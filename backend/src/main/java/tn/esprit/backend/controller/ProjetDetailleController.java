@@ -2,6 +2,8 @@ package tn.esprit.backend.controller;
 
 import lombok.AllArgsConstructor;
 import org.springframework.web.bind.annotation.*;
+import tn.esprit.backend.dto.ProjetDetailleRequest;
+import tn.esprit.backend.exception.ApiErrors;
 import tn.esprit.backend.entity.ProjetDetaille;
 import tn.esprit.backend.service.IProjetDetailleService;
 
@@ -10,19 +12,27 @@ import java.util.List;
 @RestController
 @RequestMapping("/projet-detaille")
 @AllArgsConstructor
-@CrossOrigin("*")
 public class ProjetDetailleController {
 
     IProjetDetailleService projetDetailleService;
 
     @PostMapping("/add")
-    public ProjetDetaille addProjetDetaille(@RequestBody ProjetDetaille projetDetaille) {
-        return projetDetailleService.addProjetDetaille(projetDetaille);
+    public ProjetDetaille addProjetDetaille(@RequestBody ProjetDetailleRequest request) {
+        return projetDetailleService.addProjetDetaille(request.toNewEntity());
     }
 
+    /** Loads the stored record and changes only the fields the client may write. */
     @PutMapping("/update")
-    public ProjetDetaille updateProjetDetaille(@RequestBody ProjetDetaille projetDetaille) {
-        return projetDetailleService.updateProjetDetaille(projetDetaille);
+    public ProjetDetaille updateProjetDetaille(@RequestBody ProjetDetailleRequest request) {
+        if (request.id() == null) {
+            throw ApiErrors.idRequired();
+        }
+        ProjetDetaille existing = projetDetailleService.getProjetDetailleById(request.id());
+        if (existing == null) {
+            throw ApiErrors.notFound("ProjetDetaille", request.id());
+        }
+        request.applyTo(existing);
+        return projetDetailleService.updateProjetDetaille(existing);
     }
 
     @DeleteMapping("/delete/{id}")

@@ -1,6 +1,7 @@
 package tn.esprit.backend.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -13,6 +14,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.web.server.ResponseStatusException;
 import tn.esprit.backend.entity.Projet;
 import tn.esprit.backend.entity.ProjetDetaille;
 import tn.esprit.backend.repository.ProjetDetailleRepository;
@@ -56,5 +58,13 @@ class ProjetDetailleServiceImplTest {
         when(projetRepository.findById(3L)).thenReturn(Optional.of(erp));
         when(projetDetailleRepository.save(any(ProjetDetaille.class))).thenAnswer(inv -> inv.getArgument(0));
         assertThat(service.assignProjetDetailleToProjet(1L, 3L).getProjet()).isSameAs(erp);
+    }
+
+    @Test
+    void assigningAnUnknownDetailIsA404NotANullPointer() {
+        when(projetDetailleRepository.findById(99L)).thenReturn(Optional.empty());
+        assertThatThrownBy(() -> service.assignProjetDetailleToProjet(99L, 3L))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("ProjetDetaille 99 not found");
     }
 }

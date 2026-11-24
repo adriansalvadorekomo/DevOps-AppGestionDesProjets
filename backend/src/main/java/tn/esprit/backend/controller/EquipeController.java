@@ -2,6 +2,8 @@ package tn.esprit.backend.controller;
 
 import lombok.AllArgsConstructor;
 import org.springframework.web.bind.annotation.*;
+import tn.esprit.backend.dto.EquipeRequest;
+import tn.esprit.backend.exception.ApiErrors;
 import tn.esprit.backend.entity.Equipe;
 import tn.esprit.backend.service.IEquipeService;
 
@@ -10,19 +12,27 @@ import java.util.List;
 @RestController
 @RequestMapping("/equipe")
 @AllArgsConstructor
-@CrossOrigin("*")
 public class EquipeController {
 
     IEquipeService equipeService;
 
     @PostMapping("/add")
-    public Equipe addEquipe(@RequestBody Equipe equipe) {
-        return equipeService.addEquipe(equipe);
+    public Equipe addEquipe(@RequestBody EquipeRequest request) {
+        return equipeService.addEquipe(request.toNewEntity());
     }
 
+    /** Loads the stored record and changes only the fields the client may write. */
     @PutMapping("/update")
-    public Equipe updateEquipe(@RequestBody Equipe equipe) {
-        return equipeService.updateEquipe(equipe);
+    public Equipe updateEquipe(@RequestBody EquipeRequest request) {
+        if (request.id() == null) {
+            throw ApiErrors.idRequired();
+        }
+        Equipe existing = equipeService.getEquipeById(request.id());
+        if (existing == null) {
+            throw ApiErrors.notFound("Equipe", request.id());
+        }
+        request.applyTo(existing);
+        return equipeService.updateEquipe(existing);
     }
 
     @DeleteMapping("/delete/{id}")

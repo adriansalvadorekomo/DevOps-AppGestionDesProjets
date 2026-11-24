@@ -686,7 +686,7 @@ secure place each, never in two, never in chat.
 
 Full guide moved to [`SONARQ.md`](SONARQ.md) (same What → Why → Misuse style).
 
-Short version: `docker-compose.yml` now also runs `sonarqube:lts-community` (:9000)
+Short version: `docker-compose.yml` now also runs `sonarqube:26.11.0.134175-community` (:9000)
 + `sonardb: postgres:15-alpine` (SonarQube 9.9+ dropped MySQL, so `app-db` can't be
 reused). Scanners (`sonar-maven-plugin` backend + `scanner-cli` frontend, config in
 `sonar-project.properties`) send sources + JaCoCo/LCOV coverage; Jenkins stages

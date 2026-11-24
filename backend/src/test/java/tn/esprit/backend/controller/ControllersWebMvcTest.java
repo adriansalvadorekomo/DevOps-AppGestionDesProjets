@@ -1,22 +1,28 @@
 package tn.esprit.backend.controller;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.mockito.ArgumentMatchers;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.web.server.ResponseStatusException;
 import tn.esprit.backend.entity.Entreprise;
 import tn.esprit.backend.entity.Equipe;
 import tn.esprit.backend.entity.Projet;
@@ -54,6 +60,7 @@ class ControllersWebMvcTest {
     void entrepriseEndpoints() throws Exception {
         Entreprise e = Entreprise.builder().id(2L).nom("Acme").adresse("Tunis").build();
         when(entrepriseService.getAllEntreprises()).thenReturn(List.of(e));
+        when(entrepriseService.getEntrepriseById(2L)).thenReturn(e);
         when(entrepriseService.updateEntreprise(ArgumentMatchers.any(Entreprise.class))).thenReturn(e);
         mvc.perform(get("/entreprise/all")).andExpect(status().isOk()).andExpect(jsonPath("$[0].nom").value("Acme"));
         mvc.perform(put("/entreprise/update").contentType(MediaType.APPLICATION_JSON)
@@ -84,6 +91,9 @@ class ControllersWebMvcTest {
     @Test
     void remainingCrudRoutesReachTheirService() throws Exception {
         String json = "{\"id\":1}";
+        when(projetService.getProjetById(1L)).thenReturn(Projet.builder().id(1L).build());
+        when(equipeService.getEquipeById(1L)).thenReturn(Equipe.builder().id(1L).build());
+        when(projetDetailleService.getProjetDetailleById(1L)).thenReturn(ProjetDetaille.builder().id(1L).build());
         mvc.perform(put("/projet/update").contentType(MediaType.APPLICATION_JSON).content(json)).andExpect(status().isOk());
         verify(projetService).updateProjet(ArgumentMatchers.any(Projet.class));
 
@@ -110,5 +120,68 @@ class ControllersWebMvcTest {
         mvc.perform(delete("/projet-detaille/delete/1")).andExpect(status().isOk());
         verify(projetDetailleService).getAllProjetsDetailles();
         verify(projetDetailleService).deleteProjetDetaille(1L);
+    }
+
+    @Test
+    void unknownIdOnAssignIsA404() throws Exception {
+        when(equipeService.assignEquipeToEntreprise(99L, 7L))
+                .thenThrow(new ResponseStatusException(HttpStatus.NOT_FOUND, "Equipe 99 not found"));
+        mvc.perform(put("/equipe/assign-entreprise/99/7")).andExpect(status().isNotFound());
+    }
+
+    @Test
+    void noWildcardCorsTheBrowserGoesThroughTheSameOriginProxy() throws Exception {
+        when(projetService.getAllProjets()).thenReturn(List.of());
+        mvc.perform(get("/projet/all").header("Origin", "https://evil.example"))
+                .andExpect(header().doesNotExist("Access-Control-Allow-Origin"));
+    }
+
+    @Test
+    void editingATeamKeepsItsProjectAssignments() throws Exception {
+        Projet erp = Projet.builder().id(3L).sujet("ERP").build();
+        Equipe stored = Equipe.builder().id(1L).nom("Data").specialite("ETL").projets(new ArrayList<>(List.of(erp))).build();
+        when(equipeService.getEquipeById(1L)).thenReturn(stored);
+        mvc.perform(put("/equipe/update").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"id\":1,\"nom\":\"Data platform\",\"specialite\":\"ELT\",\"entreprise\":{\"id\":2}}"))
+                .andExpect(status().isOk());
+        ArgumentCaptor<Equipe> saved = ArgumentCaptor.forClass(Equipe.class);
+        verify(equipeService).updateEquipe(saved.capture());
+        assertThat(saved.getValue().getNom()).isEqualTo("Data platform");
+        assertThat(saved.getValue().getEntreprise().getId()).isEqualTo(2L);
+        assertThat(saved.getValue().getProjets()).containsExactly(erp);
+    }
+
+    @Test
+    void editingADetailKeepsItsProject() throws Exception {
+        Projet erp = Projet.builder().id(3L).sujet("ERP").build();
+        ProjetDetaille stored = ProjetDetaille.builder().id(4L).technologie("Angular").projet(erp).build();
+        when(projetDetailleService.getProjetDetailleById(4L)).thenReturn(stored);
+        mvc.perform(put("/projet-detaille/update").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"id\":4,\"technologie\":\"Angular 22\",\"coutProvisoire\":6000}"))
+                .andExpect(status().isOk());
+        ArgumentCaptor<ProjetDetaille> saved = ArgumentCaptor.forClass(ProjetDetaille.class);
+        verify(projetDetailleService).updateProjetDetaille(saved.capture());
+        assertThat(saved.getValue().getTechnologie()).isEqualTo("Angular 22");
+        assertThat(saved.getValue().getProjet()).isSameAs(erp);
+    }
+
+    @Test
+    void aClientCannotChooseTheIdOfANewRecord() throws Exception {
+        mvc.perform(post("/projet/add").contentType(MediaType.APPLICATION_JSON).content("{\"id\":42,\"sujet\":\"ERP\"}"))
+                .andExpect(status().isOk());
+        ArgumentCaptor<Projet> saved = ArgumentCaptor.forClass(Projet.class);
+        verify(projetService).addProjet(saved.capture());
+        assertThat(saved.getValue().getId()).isNull();
+        assertThat(saved.getValue().getSujet()).isEqualTo("ERP");
+    }
+
+    @Test
+    void updateNeedsAnExistingId() throws Exception {
+        for (String route : List.of("/entreprise", "/projet", "/equipe", "/projet-detaille")) {
+            mvc.perform(put(route + "/update").contentType(MediaType.APPLICATION_JSON).content("{}"))
+                    .andExpect(status().isBadRequest());
+            mvc.perform(put(route + "/update").contentType(MediaType.APPLICATION_JSON).content("{\"id\":99}"))
+                    .andExpect(status().isNotFound());
+        }
     }
 }

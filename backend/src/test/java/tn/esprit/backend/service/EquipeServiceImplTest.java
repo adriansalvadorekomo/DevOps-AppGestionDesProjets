@@ -1,6 +1,7 @@
 package tn.esprit.backend.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -13,6 +14,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.web.server.ResponseStatusException;
 import tn.esprit.backend.entity.Entreprise;
 import tn.esprit.backend.entity.Equipe;
 import tn.esprit.backend.entity.Projet;
@@ -72,5 +74,22 @@ class EquipeServiceImplTest {
         when(projetRepository.findById(3L)).thenReturn(Optional.of(erp));
         when(equipeRepository.save(any(Equipe.class))).thenAnswer(inv -> inv.getArgument(0));
         assertThat(service.assignEquipeToProjet(1L, 3L).getProjets()).containsExactly(erp);
+    }
+
+    @Test
+    void assigningAnUnknownTeamIsA404NotANullPointer() {
+        when(equipeRepository.findById(99L)).thenReturn(Optional.empty());
+        assertThatThrownBy(() -> service.assignEquipeToEntreprise(99L, 7L))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("404");
+    }
+
+    @Test
+    void assigningToAnUnknownProjectIsA404() {
+        when(equipeRepository.findById(1L)).thenReturn(Optional.of(equipe()));
+        when(projetRepository.findById(99L)).thenReturn(Optional.empty());
+        assertThatThrownBy(() -> service.assignEquipeToProjet(1L, 99L))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("Projet 99 not found");
     }
 }

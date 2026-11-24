@@ -54,7 +54,7 @@ Browser ──► http://localhost:9000 (published port)
 
 | Concept | One-sentence version | This project |
 |---|---|---|
-| **Server** | The web app that stores rules, shows issues, enforces gates. | `app-sonarqube` (`sonarqube:lts-community`), UI `:9000` |
+| **Server** | The web app that stores rules, shows issues, enforces gates. | `app-sonarqube` (`sonarqube:26.11.0.134175-community`), UI `:9000` |
 | **Database** | Where server keeps analysis history (not your app data). | `app-sonardb` (`postgres:15-alpine`), volume `sonardb_data` |
 | **Scanner** | CLI/Maven plugin that ships your code + coverage to the server. | `sonar-maven-plugin` 3.9.1.2184 (backend) + `sonarsource/sonar-scanner-cli` (frontend) |
 | **Project Key** | Unique ID of your codebase in SonarQube. | `devops-appgestiondesprojets` (`sonar-project.properties`) |
@@ -94,7 +94,7 @@ sonardb:
   # No ports: reachable internally as sonardb:5432 only.
 
 sonarqube:
-  image: sonarqube:lts-community     # 4. LTS = stable rules, free Community
+  image: sonarqube:26.11.0.134175-community   # 4. pinned Community Build, free
   depends_on: {sonardb: {condition: service_healthy}}  # 5. wait for DB ready
   environment:
     SONAR_JDBC_URL: jdbc:postgresql://sonardb:5432/${SONAR_JDBC_DATABASE:-sonar}
@@ -108,7 +108,7 @@ sonarqube:
 
 How each decision was made:
 
-* **Base image:** `sonarqube:lts-community` — pinned LTS, free, covers Java + TS.
+* **Base image:** `sonarqube:26.11.0.134175-community`: pinned, free, covers Java + TS. (`lts-community` still resolves to 9.9, which is no longer supported and whose TypeScript analyzer rejects Angular 22's `"module": "preserve"`.)
   Floating `latest` would change rules mid-semester; pin it like `mysql:8.0`.
 * **Why Postgres 15 Alpine:** smallest image SonarQube still supports.
   Reusing `app-db` (MySQL) fails at boot with `MySQL is no longer supported`.
@@ -132,7 +132,7 @@ logs say `max virtual memory areas vm.max_map_count [65530] is too low`.
 
 | Key | What it does | Why we need it here | Misuse symptom |
 |---|---|---|---|
-| `image: sonarqube:lts-community` | Starts the analysis server. | Pinned LTS = reproducible rules. | `:latest` → new rules fail old code overnight. |
+| `image: sonarqube:26.11.0.134175-community` | Starts the analysis server. | Pinned version = reproducible rules. | `:latest` → new rules fail old code overnight. |
 | `SONAR_JDBC_URL` | Tells server where its DB lives. | Must use `sonardb:5432` (Compose DNS). | `localhost:5432` → `Connection refused` inside container. |
 | `depends_on: service_healthy` | Waits for Postgres `pg_isready`. | Server crashes if DB isn't accepting connections. | `service_started` → crash-loop on first `up`. |
 | `ports: 9000:9000` | Publishes UI. | Browser + Jenkins agent need `localhost:9000`. | Missing → "server runs but I can't open it". |

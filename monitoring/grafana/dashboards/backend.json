@@ -20,7 +20,7 @@
       "id": 1,
       "type": "stat",
       "title": "Backend up",
-      "description": "1 when Prometheus scraped /actuator/prometheus on the last attempt.",
+      "description": "UP when Prometheus scraped /actuator/prometheus on the last attempt.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -67,7 +67,22 @@
                 "value": 1
               }
             ]
-          }
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "DOWN",
+                  "color": "red"
+                },
+                "1": {
+                  "text": "UP",
+                  "color": "green"
+                }
+              }
+            }
+          ]
         },
         "overrides": []
       }
@@ -207,7 +222,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(http_server_requests_seconds_count{job=\"backend\", uri!~\"/actuator.*\", status=~\"5..\"}[5m])) / clamp_min(sum(rate(http_server_requests_seconds_count{job=\"backend\", uri!~\"/actuator.*\"}[5m])), 1e-9)",
+          "expr": "(sum(rate(http_server_requests_seconds_count{job=\"backend\", uri!~\"/actuator.*\", status=~\"5..\"}[5m])) or vector(0)) / clamp_min(sum(rate(http_server_requests_seconds_count{job=\"backend\", uri!~\"/actuator.*\"}[5m])), 1e-9)",
           "legendFormat": "",
           "refId": "A"
         }

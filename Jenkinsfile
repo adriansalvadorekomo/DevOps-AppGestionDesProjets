@@ -54,10 +54,10 @@
 //   - Docker images: maven:3.9-eclipse-temurin-17-alpine (build),
 //     eclipse-temurin:17-jre-alpine (backend runtime), node:22-alpine (build),
 //     nginx:alpine (frontend runtime), mysql:8.0 (database),
-//     sonarqube:lts-community + postgres:15-alpine (code quality, see SONARQ.md).
+//     sonarqube:26.11.0.134175-community + postgres:15-alpine (code quality, see SONARQ.md).
 //   - SonarQube: server http://localhost:9000 (compose service `sonarqube`),
-//     scanner sonarsource/sonar-scanner-cli (frontend) + sonar-maven-plugin
-//     3.9.1.2184 (backend) + JaCoCo 0.8.11 coverage. Project key
+//     scanner sonarsource/sonar-scanner-cli:12.5.0.4351_8.5.0 (frontend) + sonar-maven-plugin
+//     5.9.0.7382 (backend) + JaCoCo 0.8.16 coverage. Project key
 //     `devops-appgestiondesprojets` (sonar-project.properties at root).
 // ============================================================================
 
@@ -87,6 +87,16 @@ pipeline {
     // 2. pollSCM() = fallback: Jenkins checks GitHub every 2 min if webhook fails.
     // NOTE: pushing to Docker Hub never retriggers this pipeline (only GitHub
     // pushes do), and stage 10 pushes Git TAGS only (not `main`) to avoid a loop.
+    // BRANCH: build any branch (a PR branch before merge), not only main.
+    // PUBLISH: off = CI only (build, test, analyse, quality gate, image build);
+    // nothing is pushed to Docker Hub or GitHub and nothing is redeployed.
+    // Webhook and polling builds use the defaults: main, published.
+    parameters {
+        string(name: 'BRANCH', defaultValue: 'main', description: 'Branch to build')
+        booleanParam(name: 'PUBLISH', defaultValue: true,
+                     description: 'Push images to Docker Hub, redeploy, push the build tag')
+    }
+
     triggers {
         githubPush()
         pollSCM('H/2 * * * *')
@@ -101,7 +111,6 @@ pipeline {
         PATH = "${JAVA_HOME}/bin:${PATH}"
         // Your GitHub repo (found via `git remote -v`).
         GIT_REPO_URL = 'https://github.com/adriansalvadorekomo/DevOps-AppGestionDesProjets.git'
-        GIT_BRANCH = 'main'
         // JUNIOR: Jenkins Credentials ID for GitHub.
         // Create it once: Jenkins > Manage Jenkins > Credentials >
         // Add "Username with password" (username = GitHub user, password = GitHub PAT
@@ -134,7 +143,7 @@ pipeline {
             steps {
                 // `checkout scm` alone uses the job config; explicit `git`
                 // below guarantees the credentialsId is used.
-                git branch: "${GIT_BRANCH}",
+                git branch: "${params.BRANCH ?: 'main'}",
                     credentialsId: "${GITHUB_CREDENTIALS_ID}",
                     url: "${GIT_REPO_URL}"
             }
@@ -251,11 +260,13 @@ pipeline {
                         echo "=== Frontend unit tests + coverage (vitest → frontend/coverage/frontend/lcov.info) ==="
                         (cd frontend && npm run test:ci)
                         echo "=== SonarQube: frontend scan (scanner-cli) ==="
-                        retry 3 docker run --rm \
+                        # --network host: "localhost:9000" must be the Jenkins host's SonarQube,
+                        # not the scanner container itself.
+                        retry 3 docker run --rm --network host \
                           -v "$PWD:/usr/src" -w /usr/src \
                           -e SONAR_HOST_URL="$SONAR_HOST_URL" \
                           -e SONAR_TOKEN="$SONAR_TOKEN" \
-                          sonarsource/sonar-scanner-cli \
+                          sonarsource/sonar-scanner-cli:12.5.0.4351_8.5.0 \
                           -Dsonar.projectKey="$SONAR_PROJECT_KEY-frontend" \
                           -Dsonar.projectName="DevOps-AppGestionDesProjets-frontend" \
                           -Dsonar.sources=frontend/src \
@@ -345,6 +356,7 @@ pipeline {
         // would wipe this agent-level auth after every build.
         // ====================================================================
         stage('Login Docker Hub') {
+            when { expression { params.PUBLISH != false } }
             steps {
                 echo '=== Stage: Login Docker Hub (agent-level auth check) ==='
                 sh '''
@@ -382,6 +394,7 @@ pipeline {
         // build stays rollback-able via its number.
         // ====================================================================
         stage('Tag Images') {
+            when { expression { params.PUBLISH != false } }
             steps {
                 sh '''
                     docker tag "$DOCKERHUB_NAMESPACE/gestion-projets-backend:$IMAGE_TAG" "$DOCKERHUB_NAMESPACE/gestion-projets-backend:latest"
@@ -402,6 +415,7 @@ pipeline {
 //     twelvy1400/frontend:build-N + :latest
         // ====================================================================
         stage('Push Images') {
+            when { expression { params.PUBLISH != false } }
             steps {
                 sh '''
                     retry() {
@@ -446,6 +460,7 @@ pipeline {
         // instead of a cryptic failure. The script itself never echoes secrets.
         // ====================================================================
         stage('Deploy / Verify') {
+            when { expression { params.PUBLISH != false } }
             steps {
                 script {
                     try {
@@ -476,6 +491,7 @@ pipeline {
         // (Docker Hub pushes never trigger this pipeline — only GitHub does.)
         // ====================================================================
         stage('Push') {
+            when { expression { params.PUBLISH != false } }
             steps {
                 // `withCredentials` safely injects GitHub user + token as
                 // env vars. Jenkins masks them in logs. Never hardcode tokens!

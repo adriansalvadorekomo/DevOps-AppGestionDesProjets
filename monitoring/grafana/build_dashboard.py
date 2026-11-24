@@ -15,7 +15,7 @@ def target(expr, legend="", ref="A"):
     return {"datasource": DS, "expr": expr, "legendFormat": legend, "refId": ref}
 
 
-def stat(title, expr, x, unit="none", decimals=None, thresholds=None, desc=""):
+def stat(title, expr, x, unit="none", decimals=None, thresholds=None, desc="", mappings=None):
     p = {
         "id": next(_id), "type": "stat", "title": title, "description": desc, "datasource": DS,
         "gridPos": {"x": x, "y": 0, "w": 4, "h": 4},
@@ -27,6 +27,8 @@ def stat(title, expr, x, unit="none", decimals=None, thresholds=None, desc=""):
     }
     if decimals is not None:
         p["fieldConfig"]["defaults"]["decimals"] = decimals
+    if mappings:
+        p["fieldConfig"]["defaults"]["mappings"] = mappings
     return p
 
 
@@ -54,11 +56,14 @@ red = lambda warn, crit: {"mode": "absolute", "steps": [  # noqa: E731
 panels = [
     stat("Backend up", 'up{job="backend"}', 0, thresholds={"mode": "absolute", "steps": [
         {"color": "red", "value": None}, {"color": "green", "value": 1}]},
-         desc="1 when Prometheus scraped /actuator/prometheus on the last attempt."),
+         desc="UP when Prometheus scraped /actuator/prometheus on the last attempt.",
+         mappings=[{"type": "value", "options": {
+             "0": {"text": "DOWN", "color": "red"}, "1": {"text": "UP", "color": "green"}}}]),
     stat("Requests / s", f"sum(rate(http_server_requests_seconds_count{{{API}}}[1m]))", 4, "reqps", 2),
     stat("p95 latency", f"histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket{{{API}}}[5m])))",
          8, "s", 3, red(0.25, 0.5)),
-    stat("5xx share", f'sum(rate(http_server_requests_seconds_count{{{API}, status=~"5.."}}[5m])) '
+    # "or vector(0)": with no 5xx at all the numerator has no series; show 0 %, not "No data".
+    stat("5xx share", f'(sum(rate(http_server_requests_seconds_count{{{API}, status=~"5.."}}[5m])) or vector(0)) '
          f"/ clamp_min(sum(rate(http_server_requests_seconds_count{{{API}}}[5m])), 1e-9)", 12, "percentunit", 1,
          red(0.01, 0.05)),
     stat("Heap used", 'sum(jvm_memory_used_bytes{job="backend", area="heap"}) '

@@ -12,16 +12,16 @@
       <h3 class="form-title">{{ editMode() ? 'Modifier' : 'Nouvelle' }} Équipe</h3>
       <div class="form-grid">
         <div class="form-group">
-          <label>Nom</label>
-          <input type="text" [value]="current().nom" (input)="update('nom', $any($event.target).value)" placeholder="Nom de l'équipe" />
+          <label for="equipes-nom">Nom</label>
+          <input id="equipes-nom" type="text" [value]="current().nom" (input)="update('nom', $any($event.target).value)" placeholder="Nom de l'équipe" />
         </div>
         <div class="form-group">
-          <label>Spécialité</label>
-          <input type="text" [value]="current().specialite" (input)="update('specialite', $any($event.target).value)" placeholder="Ex: Backend, DevOps..." />
+          <label for="equipes-specialite">Spécialité</label>
+          <input id="equipes-specialite" type="text" [value]="current().specialite" (input)="update('specialite', $any($event.target).value)" placeholder="Ex: Backend, DevOps..." />
         </div>
         <div class="form-group">
-          <label>Entreprise</label>
-          <select [value]="selectedEntrepriseId() ?? ''" (change)="selectedEntrepriseId.set($any($event.target).value ? +$any($event.target).value : null)">
+          <label for="equipes-entreprise">Entreprise</label>
+          <select id="equipes-entreprise" [value]="selectedEntrepriseId() ?? ''" (change)="selectedEntrepriseId.set($any($event.target).value ? +$any($event.target).value : null)">
             <option value="">-- Sélectionner une entreprise --</option>
             @for (ent of entreprises(); track ent.id) {
               <option [value]="ent.id">{{ ent.nom }}</option>
@@ -44,6 +44,7 @@
       </div>
     } @else {
       <table class="data-table">
+        <caption class="visually-hidden">Liste des équipes</caption>
         <thead>
           <tr>
             <th>#</th>

@@ -36,6 +36,10 @@ services:
       SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME:-root}
       SPRING_DATASOURCE_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
       SPRING_JPA_HIBERNATE_DDL_AUTO: ${SPRING_JPA_HIBERNATE_DDL_AUTO:-update}
+      # Size the heap from the container limit, as in k8s/backend.yaml. Without a
+      # limit the JVM sizes itself from the host's RAM.
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=75
+    mem_limit: 640m
     ports:
       - "8080:8080"
     networks:
@@ -84,10 +88,13 @@ services:
   # JUNIOR: What is this?
   # SonarQube = static-analysis server: scanners send sources + coverage,
   # server computes bugs/vulnerabilities/duplication/coverage, Quality Gate
-  # says PASS/FAIL. UI at http://localhost:9000 (admin/admin on first boot).
-  # Scanner -> http://sonarqube:9000 inside Compose; browser -> localhost:9000.
+  # says PASS/FAIL. UI at http://localhost:9000 (admin/admin on first boot,
+  # then a forced password change). Scanner -> http://sonarqube:9000 inside
+  # Compose; browser and Jenkins (same host) -> localhost:9000.
+  # Pinned Community Build: `lts-community` still resolves to 9.9, which
+  # SonarSource no longer supports. Upgrading an existing 9.9 volume: SONARQ.md.
   sonarqube:
-    image: sonarqube:lts-community
+    image: sonarqube:26.11.0.134175-community
     container_name: app-sonarqube
     depends_on:
       sonardb:
@@ -99,7 +106,7 @@ services:
       # Token is NEVER baked here: scanners pass SONAR_TOKEN at analysis time
       # (Jenkins credential `sonar-token`, see Jenkinsfile + SONARQ.md).
     ports:
-      - "9000:9000"
+      - "127.0.0.1:9000:9000"   # holds the admin account: not exposed on the LAN
     volumes:
       - sonarqube_data:/opt/sonarqube/data
       - sonarqube_logs:/opt/sonarqube/logs
