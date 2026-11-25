@@ -26,7 +26,7 @@
 
 ## What it is for
 
-This repository is my fork of a course project. The application itself, four related CRUD screens for companies, teams, projects and project details, is the course's starter (the first commit). Everything around it is mine, built to practise the delivery side end to end:
+This repository is my fork of a course project. **Application code provided by the course team (Alaa-Rami); I built the 10-stage delivery pipeline alone.** The application itself, four related CRUD screens for companies, teams, projects and project details, is the course's starter (the first commit). Everything around it is mine, built to practise the delivery side end to end:
 
 - **No image is built from unchecked code.** Jenkins compiles both halves, runs 28 backend and 20 frontend tests with coverage, sends both analyses to SonarQube and stops if either quality gate is red. Only then are images built.
 - **The quality bar is real, not decorative.** Both projects show 0 bugs, 0 vulnerabilities, 0 code smells and 0 open security hotspots, with A ratings throughout. Reaching that meant fixing what the scanner found (see [Quality](#quality)).
